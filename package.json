@@ -1,0 +1,26 @@
+{
+  "name": "flywheel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Covered Call & Wheel Copilot — deterministic core engine",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cli": "tsx src/cli/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "cli-table3": "^0.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
