@@ -13,9 +13,6 @@ describe('generateCoveredCallRecommendations', () => {
     const chains = buildDemoChains();
     const settings: StrategySettings = {
       ...DEMO_SETTINGS,
-      // Widen delta and relax premium filters so every candidate that could
-      // pass would be considered — the only thing stopping strikes < cost
-      // basis from appearing is the cost-basis check itself.
       targetDeltaRange: [0.01, 0.99],
       minPremiumPct: 0,
       minAnnualizedYield: 0,
@@ -82,7 +79,6 @@ describe('generateCoveredCallRecommendations', () => {
     const chains = buildDemoChains();
     const portfolio = {
       ...DEMO_PORTFOLIO,
-      // MSFT has 100 shares → fully covered by 1 short call.
       options: [
         ...DEMO_PORTFOLIO.options,
         {
@@ -106,5 +102,64 @@ describe('generateCoveredCallRecommendations', () => {
       DEMO_OVERRIDES,
     );
     expect(recs.find((r) => r.symbol === 'MSFT')).toBeUndefined();
+  });
+
+  it('results are grouped by ticker alphabetically', () => {
+    const chains = buildDemoChains();
+    const recs = generateCoveredCallRecommendations(
+      DEMO_PORTFOLIO,
+      chains,
+      DEMO_SETTINGS,
+      DEMO_OVERRIDES,
+    );
+    const symbols = recs.map((r) => r.symbol);
+    const uniqueSymbols = [...new Set(symbols)];
+    // Within the output, symbols should appear in alphabetical blocks.
+    const sortedSymbols = [...uniqueSymbols].sort();
+    expect(uniqueSymbols).toEqual(sortedSymbols);
+  });
+
+  it('includes style tags on all recommendations', () => {
+    const chains = buildDemoChains();
+    const recs = generateCoveredCallRecommendations(
+      DEMO_PORTFOLIO,
+      chains,
+      DEMO_SETTINGS,
+      DEMO_OVERRIDES,
+    );
+    for (const r of recs) {
+      expect(['Safer', 'Balanced', 'Income']).toContain(r.styleTag);
+    }
+  });
+
+  it('cycleYield is consistent with annualizedYield', () => {
+    const chains = buildDemoChains();
+    const recs = generateCoveredCallRecommendations(
+      DEMO_PORTFOLIO,
+      chains,
+      DEMO_SETTINGS,
+      DEMO_OVERRIDES,
+    );
+    for (const r of recs) {
+      const expectedAnnualized = r.cycleYield * (365 / r.contract.dte);
+      expect(r.annualizedYield).toBeCloseTo(expectedAnnualized, 6);
+    }
+  });
+
+  it('contractsAvailable and totalPremium are consistent', () => {
+    const chains = buildDemoChains();
+    const recs = generateCoveredCallRecommendations(
+      DEMO_PORTFOLIO,
+      chains,
+      DEMO_SETTINGS,
+      DEMO_OVERRIDES,
+    );
+    for (const r of recs) {
+      expect(r.contractsAvailable).toBeGreaterThanOrEqual(1);
+      expect(r.totalPremium).toBeCloseTo(
+        r.premium * r.contractsAvailable,
+        6,
+      );
+    }
   });
 });

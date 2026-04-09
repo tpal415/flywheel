@@ -1,19 +1,33 @@
 /**
  * Roll recommendation engine.
  *
- * For each open SHORT option position, check the roll triggers:
- *   - |delta| exceeds settings.rollTriggerDelta, OR
- *   - remaining DTE / original DTE is below settings.rollTriggerDtePct
+ * For each open SHORT option position, checks five roll triggers:
+ *   1. DELTA         — |delta| >= settings.roll.deltaThreshold
+ *   2. DTE_RATIO     — remaining DTE / original DTE <= settings.roll.dteRatioThreshold
+ *   3. NEAR_STRIKE   — |spot - strike| / spot <= settings.roll.nearStrikePct
+ *   4. MIN_DTE       — remaining DTE <= settings.roll.minDte
+ *   5. PROFIT_CAPTURE — (openPrice - currentMid) / openPrice >= settings.roll.profitCapturePct
  *
- * If either trips, look for a roll candidate: same or further-out expiration,
- * strike equal or better (further OTM in the direction of the short), at a
- * net credit vs closing the current position at its current mid.
+ * If any trigger fires, the engine searches for a roll candidate: same or
+ * further-out expiration, strike equal or better (further OTM), at a net
+ * credit vs closing the current position at market mid.
+ *
+ * Phase 2: accepts per-ticker overrides for roll thresholds.
  */
 
 import type { OptionChain, OptionContract } from '../types/chains.js';
 import type { OptionPosition } from '../types/positions.js';
-import type { RollRecommendation } from '../types/recommendations.js';
-import type { StrategySettings } from '../types/settings.js';
+import type {
+  RollRecommendation,
+  RollTriggerDetail,
+} from '../types/recommendations.js';
+import { styleTagFromDelta } from '../types/recommendations.js';
+import {
+  effectiveSettings,
+  type RollSettings,
+  type StrategySettings,
+  type TickerOverride,
+} from '../types/settings.js';
 import { annualizedYield, computeScore } from './scoring.js';
 
 interface CurrentContractView {
@@ -38,42 +52,73 @@ function currentMarketForPosition(
   return { mid: match.mid, delta: match.delta, dte: match.dte };
 }
 
-function shouldTriggerRoll(
+/**
+ * Evaluate all five roll triggers. Returns the list of triggers that fired.
+ */
+function evaluateRollTriggers(
+  position: OptionPosition,
   current: CurrentContractView,
-  originalDte: number,
-  settings: StrategySettings,
-): { readonly triggered: boolean; readonly reasons: readonly string[] } {
-  const reasons: string[] = [];
-  let triggered = false;
-  if (Math.abs(current.delta) >= settings.rollTriggerDelta) {
-    triggered = true;
-    reasons.push(
-      `|delta| ${Math.abs(current.delta).toFixed(
-        2,
-      )} ≥ roll trigger ${settings.rollTriggerDelta.toFixed(2)}.`,
-    );
+  spot: number,
+  roll: RollSettings,
+): readonly RollTriggerDetail[] {
+  const triggers: RollTriggerDetail[] = [];
+
+  // 1. Delta threshold
+  if (Math.abs(current.delta) >= roll.deltaThreshold) {
+    triggers.push({
+      label: 'DELTA',
+      message: `|delta| ${Math.abs(current.delta).toFixed(2)} >= threshold ${roll.deltaThreshold.toFixed(2)}`,
+    });
   }
+
+  // 2. DTE ratio threshold
   if (
-    originalDte > 0 &&
-    current.dte / originalDte <= settings.rollTriggerDtePct
+    position.originalDte > 0 &&
+    current.dte / position.originalDte <= roll.dteRatioThreshold
   ) {
-    triggered = true;
-    reasons.push(
-      `Remaining DTE ${current.dte}/${originalDte} (${(
-        (current.dte / originalDte) *
-        100
-      ).toFixed(0)}%) ≤ trigger ${(settings.rollTriggerDtePct * 100).toFixed(
-        0,
-      )}%.`,
-    );
+    const pct = ((current.dte / position.originalDte) * 100).toFixed(0);
+    triggers.push({
+      label: 'DTE_RATIO',
+      message: `DTE ${current.dte}/${position.originalDte} (${pct}%) <= threshold ${(roll.dteRatioThreshold * 100).toFixed(0)}%`,
+    });
   }
-  return { triggered, reasons };
+
+  // 3. Near strike
+  const nearStrike = Math.abs(spot - position.strike) / spot;
+  if (nearStrike <= roll.nearStrikePct) {
+    triggers.push({
+      label: 'NEAR_STRIKE',
+      message: `Spot $${spot.toFixed(2)} is ${(nearStrike * 100).toFixed(1)}% from strike $${position.strike.toFixed(2)} (<= ${(roll.nearStrikePct * 100).toFixed(0)}% threshold)`,
+    });
+  }
+
+  // 4. Min DTE
+  if (current.dte <= roll.minDte) {
+    triggers.push({
+      label: 'MIN_DTE',
+      message: `Only ${current.dte}d remaining (<= ${roll.minDte}d minimum)`,
+    });
+  }
+
+  // 5. Profit capture
+  if (position.openPrice > 0) {
+    const captured =
+      (position.openPrice - current.mid) / position.openPrice;
+    if (captured >= roll.profitCapturePct) {
+      triggers.push({
+        label: 'PROFIT_CAPTURE',
+        message: `${(captured * 100).toFixed(0)}% of max profit captured (>= ${(roll.profitCapturePct * 100).toFixed(0)}% threshold) — consider closing or rolling`,
+      });
+    }
+  }
+
+  return triggers;
 }
 
 /**
  * "Better strike" in roll direction:
- *   - for a short CALL, better means strike > current strike (up)
- *   - for a short PUT,  better means strike < current strike (down)
+ *   - for a short CALL, better means strike >= current strike (up or same)
+ *   - for a short PUT,  better means strike <= current strike (down or same)
  */
 function isStrikeEqualOrBetter(
   position: OptionPosition,
@@ -96,15 +141,12 @@ function enumerateRollCandidates(
 ): readonly RollCandidate[] {
   const candidates: RollCandidate[] = [];
   for (const slice of chain.expirations) {
-    // Same or further-out expiration.
     if (slice.date < position.expiration) continue;
     const legs = position.type === 'CALL' ? slice.calls : slice.puts;
     for (const c of legs) {
       if (!isStrikeEqualOrBetter(position, c.strike)) continue;
-      // Net credit: new premium received − cost to close current short.
       const netCredit = (c.mid - currentMid) * 100 * position.contracts;
       if (netCredit <= 0) continue;
-      // Skip the exact same contract.
       if (slice.date === position.expiration && c.strike === position.strike) {
         continue;
       }
@@ -119,31 +161,34 @@ function enumerateRollCandidates(
 }
 
 /**
- * Generate roll recommendations for the given open short-option positions.
+ * Generate roll recommendations for open short-option positions.
  *
  * Inputs:
  *   - openOptionPositions: user's current open option legs
  *   - chains:              map from symbol → OptionChain
- *   - settings:            global strategy defaults (no per-ticker overrides
- *                          on rolls in phase 1 — keeps logic simple)
+ *   - settings:            global strategy defaults
+ *   - overrides:           per-ticker overrides (roll thresholds can differ)
  *
  * Output: at most one roll recommendation per triggered position, selected
- * by largest net credit then best score. If no candidate clears a net credit,
- * no rec is produced for that position (caller should treat as "hold or
- * close" — a separate HOLD/CLOSE rec could be added later).
+ * by largest net credit then best score. Each recommendation includes which
+ * specific triggers fired.
  *
  * Assumptions:
- *   - Only SHORT positions are considered. LONG positions are left alone.
- *   - A roll is constructed as a 1:1 contract swap (same contract count).
- *   - `originalDte` on the position feeds the time-decay trigger.
- *   - Candidate must be a strict improvement: same-or-further expiration,
- *     same-or-better strike, and strictly positive net credit.
+ *   - Only SHORT positions are considered.
+ *   - Roll is a 1:1 contract swap at strictly positive net credit.
+ *   - All five triggers are evaluated; any single trigger firing is enough.
  */
 export function generateRollRecommendations(
   openOptionPositions: readonly OptionPosition[],
   chains: ReadonlyMap<string, OptionChain>,
   settings: StrategySettings,
+  overrides?: readonly TickerOverride[],
 ): readonly RollRecommendation[] {
+  const overrideBySymbol = new Map<string, TickerOverride>();
+  if (overrides) {
+    for (const o of overrides) overrideBySymbol.set(o.symbol, o);
+  }
+
   const out: RollRecommendation[] = [];
   for (const pos of openOptionPositions) {
     if (pos.side !== 'SHORT') continue;
@@ -152,12 +197,17 @@ export function generateRollRecommendations(
     const current = currentMarketForPosition(pos, chain);
     if (!current) continue;
 
-    const { triggered, reasons } = shouldTriggerRoll(
-      current,
-      pos.originalDte,
+    const eff = effectiveSettings(
       settings,
+      overrideBySymbol.get(pos.symbol),
     );
-    if (!triggered) continue;
+    const triggers = evaluateRollTriggers(
+      pos,
+      current,
+      chain.underlyingPrice,
+      eff.roll,
+    );
+    if (triggers.length === 0) continue;
 
     const currentMid = current.mid;
     const candidates = enumerateRollCandidates(pos, chain, currentMid);
@@ -192,32 +242,45 @@ export function generateRollRecommendations(
     const best = scored[0];
     if (!best) continue;
 
+    const triggerSummary = triggers
+      .map((t) => `[${t.label}] ${t.message}`)
+      .join('\n    ');
+
+    const closeCost = currentMid * 100 * pos.contracts;
+    const newPremium = best.cand.contract.mid * 100 * pos.contracts;
+
     const rationale: string[] = [
-      `Roll trigger fired: ${reasons.join(' ')}`,
-      `New strike $${best.cand.contract.strike.toFixed(
-        2,
-      )} exp ${best.cand.slice.date} (${best.cand.contract.dte}d).`,
-      `Net credit $${best.cand.netCredit.toFixed(0)} after buying back $${(
-        currentMid * 100 * pos.contracts
-      ).toFixed(0)} and selling $${(
-        best.cand.contract.mid * 100 * pos.contracts
-      ).toFixed(0)}.`,
-      `New delta ${best.cand.contract.delta.toFixed(2)}.`,
+      `Triggers fired:\n    ${triggerSummary}`,
+      `Roll ${pos.type} $${pos.strike.toFixed(2)} ${pos.expiration} → $${best.cand.contract.strike.toFixed(2)} ${best.cand.slice.date} (${best.cand.contract.dte}d).`,
+      `Buy back @ $${closeCost.toFixed(0)}, sell new @ $${newPremium.toFixed(0)} → net credit $${best.cand.netCredit.toFixed(0)}.`,
+      `New delta ${best.cand.contract.delta.toFixed(2)} (${styleTagFromDelta(Math.abs(best.cand.contract.delta))}).`,
     ];
+
+    const cycleYield =
+      chain.underlyingPrice > 0
+        ? (best.cand.contract.mid * 100) /
+          (chain.underlyingPrice * 100)
+        : 0;
 
     out.push({
       symbol: pos.symbol,
       action: 'ROLL',
       contract: best.cand.contract,
       expiration: best.cand.slice.date,
+      currentPrice: chain.underlyingPrice,
+      contractsAvailable: pos.contracts,
       premium: best.cand.contract.mid * 100,
+      totalPremium: newPremium,
+      cycleYield,
       upsidePct: best.upsidePct,
       annualizedYield: best.ay,
       assignmentProb: best.assignmentProb,
       score: best.score,
+      styleTag: styleTagFromDelta(best.assignmentProb),
       rationale,
       relatedPositionId: pos.id,
       netCredit: best.cand.netCredit,
+      triggers,
     });
   }
   return out;

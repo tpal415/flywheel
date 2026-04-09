@@ -2,7 +2,6 @@ export {
   DEMO_PORTFOLIO,
   DEMO_SETTINGS,
   DEMO_OVERRIDES,
-  DEMO_EXPIRATIONS,
   EVAL_DATE,
   buildDemoChains,
 } from './portfolio.js';

@@ -1,0 +1,32 @@
+{
+  "cash": 25000,
+
+  "stocks": [
+    { "symbol": "TSLA",  "shares":   200, "avgCostBasis": 220.00 },
+    { "symbol": "PLTR",  "shares":   200, "avgCostBasis":  18.00 },
+    { "symbol": "IREN",  "shares":   400, "avgCostBasis":   9.00 },
+    { "symbol": "OPEN",  "shares": 14400, "avgCostBasis":   3.50 },
+    { "symbol": "MSFT",  "shares":   100, "avgCostBasis": 380.00 }
+  ],
+
+  "openOptions": [
+    {
+      "symbol": "TSLA",
+      "type": "CALL",
+      "strike": 225,
+      "expiration": "2026-04-15",
+      "contracts": 1,
+      "openPrice": 4.20,
+      "side": "SHORT",
+      "originalDte": 30,
+      "openedOn": "2026-03-09"
+    }
+  ],
+
+  "closedTrades": [
+    { "symbol": "PLTR", "type": "CALL", "contracts":  2, "netPremium": 180, "closedOn": "2026-02-20" },
+    { "symbol": "IREN", "type": "CALL", "contracts":  4, "netPremium": 260, "closedOn": "2026-03-01" },
+    { "symbol": "OPEN", "type": "CALL", "contracts": 20, "netPremium": 640, "closedOn": "2026-03-14" },
+    { "symbol": "MSFT", "type": "PUT",  "contracts":  1, "netPremium": 320, "closedOn": "2026-03-21" }
+  ]
+}

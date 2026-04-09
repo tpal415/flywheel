@@ -1,0 +1,25 @@
+{
+  "evaluationDate": "2026-04-08",
+
+  "expirations": [
+    { "date": "2026-04-15", "dte":  7 },
+    { "date": "2026-04-29", "dte": 21 },
+    { "date": "2026-05-23", "dte": 45 }
+  ],
+
+  "tickers": {
+    "TSLA":  { "price": 240.00, "iv": 0.55 },
+    "PLTR":  { "price":  22.00, "iv": 0.60 },
+    "IREN":  { "price":  11.00, "iv": 0.75 },
+    "OPEN":  { "price":   4.00, "iv": 0.80 },
+    "MSFT":  { "price": 420.00, "iv": 0.22 },
+    "NVDA":  { "price": 900.00, "iv": 0.45 },
+    "AMD":   { "price": 180.00, "iv": 0.50 },
+    "GOOGL": { "price": 160.00, "iv": 0.28 }
+  },
+
+  "chainAssumptions": {
+    "riskFreeRate": 0.045,
+    "dividendYield": 0.0
+  }
+}

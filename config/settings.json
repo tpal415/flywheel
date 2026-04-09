@@ -1,0 +1,16 @@
+{
+  "targetDeltaRange": [0.15, 0.35],
+  "minDTE": 5,
+  "maxDTE": 50,
+  "minPremiumPct": 0.003,
+  "minAnnualizedYield": 0.15,
+  "maxRecommendationsPerSymbol": 3,
+
+  "roll": {
+    "deltaThreshold": 0.50,
+    "dteRatioThreshold": 0.30,
+    "nearStrikePct": 0.02,
+    "minDte": 3,
+    "profitCapturePct": 0.80
+  }
+}

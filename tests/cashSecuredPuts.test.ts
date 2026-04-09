@@ -9,8 +9,6 @@ import {
 describe('generateCashSecuredPutRecommendations', () => {
   it('excludes candidates that exceed cashAvailable', () => {
     const chains = buildDemoChains();
-    // $25,000 cash: NVDA puts require ≥ $67,500 per contract and must all
-    // be filtered out; AMD/GOOGL should still produce candidates.
     const recs = generateCashSecuredPutRecommendations(
       ['NVDA', 'AMD', 'GOOGL'],
       25_000,
@@ -53,5 +51,21 @@ describe('generateCashSecuredPutRecommendations', () => {
       DEMO_OVERRIDES,
     );
     expect(recs.length).toBe(0);
+  });
+
+  it('includes style tags and cycle yield', () => {
+    const chains = buildDemoChains();
+    const recs = generateCashSecuredPutRecommendations(
+      ['AMD', 'GOOGL'],
+      25_000,
+      chains,
+      DEMO_SETTINGS,
+      DEMO_OVERRIDES,
+    );
+    for (const r of recs) {
+      expect(['Safer', 'Balanced', 'Income']).toContain(r.styleTag);
+      expect(r.cycleYield).toBeGreaterThan(0);
+      expect(r.contractsAvailable).toBeGreaterThanOrEqual(1);
+    }
   });
 });

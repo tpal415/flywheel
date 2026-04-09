@@ -7,6 +7,7 @@
 
 import type { OptionChain, OptionContract } from '../types/chains.js';
 import type { SellCashSecuredPutRecommendation } from '../types/recommendations.js';
+import { styleTagFromDelta } from '../types/recommendations.js';
 import {
   effectiveSettings,
   type StrategySettings,
@@ -28,7 +29,6 @@ function evaluatePut(
 ): SellCashSecuredPutRecommendation | undefined {
   const { symbol, spot, put, expirationDate, cashAvailable, settings } = inputs;
   if (put.dte < settings.minDTE || put.dte > settings.maxDTE) return undefined;
-  // Only consider OTM puts — strike below spot.
   if (put.strike >= spot) return undefined;
 
   const absDelta = Math.abs(put.delta);
@@ -45,25 +45,18 @@ function evaluatePut(
   const ay = annualizedYield(premium, cashRequired, put.dte);
   if (ay < settings.minAnnualizedYield) return undefined;
 
+  const cycleYield = cashRequired > 0 ? premium / cashRequired : 0;
   const upsidePct = (spot - put.strike) / spot;
   const assignmentProb = absDelta;
   const score = computeScore(ay, upsidePct, assignmentProb);
+  const styleTag = styleTagFromDelta(absDelta);
+  const maxContracts = Math.floor(cashAvailable / cashRequired);
 
   const rationale: string[] = [
-    `Strike $${put.strike.toFixed(2)} is $${(
-      spot - put.strike
-    ).toFixed(2)} (${(upsidePct * 100).toFixed(
-      1,
-    )}%) below spot $${spot.toFixed(2)} — acceptable entry.`,
-    `Cash required $${cashRequired.toFixed(
-      0,
-    )} fits inside available $${cashAvailable.toFixed(0)}.`,
-    `Premium $${premium.toFixed(0)} over ${put.dte}d → ${(ay * 100).toFixed(
-      1,
-    )}% annualized yield on cash reserve.`,
-    `Delta ${put.delta.toFixed(2)} ≈ ${(absDelta * 100).toFixed(
-      0,
-    )}% assignment probability.`,
+    `${styleTag} entry: delta ${put.delta.toFixed(2)} within [${settings.targetDeltaRange[0]}, ${settings.targetDeltaRange[1]}] range.`,
+    `Strike $${put.strike.toFixed(2)} is ${(upsidePct * 100).toFixed(1)}% below spot $${spot.toFixed(2)} — acceptable entry if assigned.`,
+    `Cash $${cashRequired.toFixed(0)}/contract × ${maxContracts} fits in $${cashAvailable.toFixed(0)}.`,
+    `$${premium.toFixed(0)} premium over ${put.dte}d = ${(cycleYield * 100).toFixed(2)}% cycle / ${(ay * 100).toFixed(1)}% annualized.`,
   ];
 
   return {
@@ -71,11 +64,16 @@ function evaluatePut(
     action: 'SELL_CSP',
     contract: put,
     expiration: expirationDate,
+    currentPrice: spot,
+    contractsAvailable: maxContracts,
     premium,
+    totalPremium: premium * maxContracts,
+    cycleYield,
     upsidePct,
     annualizedYield: ay,
     assignmentProb,
     score,
+    styleTag,
     rationale,
     cashRequired,
   };
@@ -92,14 +90,12 @@ function evaluatePut(
  *   - overrides:      per-ticker overrides
  *
  * Output: ranked CSP recommendations, at most
- * `settings.maxRecommendationsPerSymbol` per symbol. Sorted by score desc.
+ * `maxRecommendationsPerSymbol` per symbol, sorted by ticker then score.
  *
  * Assumptions:
- *   - Only OTM puts are considered as entry candidates.
+ *   - Only OTM puts are considered.
  *   - Cash requirement is strike * 100 per contract (no margin offset).
  *   - assignmentProb ≈ |delta| (documented approximation).
- *   - A rec is only produced if a single contract fits in `cashAvailable`;
- *     the engine never recommends a size that would blow the cash reserve.
  */
 export function generateCashSecuredPutRecommendations(
   watchlist: readonly string[],
@@ -112,7 +108,9 @@ export function generateCashSecuredPutRecommendations(
   for (const o of overrides) overrideBySymbol.set(o.symbol, o);
 
   const results: SellCashSecuredPutRecommendation[] = [];
-  for (const symbol of watchlist) {
+  const sortedWatchlist = [...watchlist].sort();
+
+  for (const symbol of sortedWatchlist) {
     const chain = chains.get(symbol);
     if (!chain) continue;
     const eff = effectiveSettings(settings, overrideBySymbol.get(symbol));

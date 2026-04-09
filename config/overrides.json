@@ -1,0 +1,13 @@
+[
+  {
+    "symbol": "TSLA",
+    "targetDeltaRange": [0.15, 0.25],
+    "note": "Tighter delta band — keep assignment risk lower on a volatile name"
+  },
+  {
+    "symbol": "OPEN",
+    "minPremiumPct": 0.002,
+    "minAnnualizedYield": 0.10,
+    "note": "Accept lower absolute premium since the underlying is cheap"
+  }
+]
