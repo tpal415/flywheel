@@ -1,8 +1,5 @@
 /**
- * Cash-secured put recommendation engine.
- *
- * For each symbol on the watchlist, finds short-put candidates whose cash
- * reserve fits inside the user's available cash.
+ * Cash-secured put recommendation engine — primary + secondary per ticker.
  */
 
 import type { OptionChain, OptionContract } from '../types/chains.js';
@@ -21,7 +18,7 @@ interface CspCandidateInputs {
   readonly put: OptionContract;
   readonly expirationDate: string;
   readonly cashAvailable: number;
-  readonly settings: StrategySettings;
+  readonly settings: ReturnType<typeof effectiveSettings>;
 }
 
 function evaluatePut(
@@ -48,15 +45,22 @@ function evaluatePut(
   const cycleYield = cashRequired > 0 ? premium / cashRequired : 0;
   const upsidePct = (spot - put.strike) / spot;
   const assignmentProb = absDelta;
-  const score = computeScore(ay, upsidePct, assignmentProb);
-  const styleTag = styleTagFromDelta(absDelta);
   const maxContracts = Math.floor(cashAvailable / cashRequired);
 
+  const score = computeScore({
+    annualizedYield: ay,
+    distancePct: upsidePct,
+    assignmentProb,
+    costBasisMarginPct: upsidePct,
+    assignmentPreference: settings.assignmentPreference,
+    strategyMode: settings.strategyMode,
+    compounder: false,
+  });
+
   const rationale: string[] = [
-    `${styleTag} entry: delta ${put.delta.toFixed(2)} within [${settings.targetDeltaRange[0]}, ${settings.targetDeltaRange[1]}] range.`,
-    `Strike $${put.strike.toFixed(2)} is ${(upsidePct * 100).toFixed(1)}% below spot $${spot.toFixed(2)} — acceptable entry if assigned.`,
-    `Cash $${cashRequired.toFixed(0)}/contract × ${maxContracts} fits in $${cashAvailable.toFixed(0)}.`,
-    `$${premium.toFixed(0)} premium over ${put.dte}d = ${(cycleYield * 100).toFixed(2)}% cycle / ${(ay * 100).toFixed(1)}% annualized.`,
+    `Entry at $${put.strike.toFixed(2)} = ${(upsidePct * 100).toFixed(1)}% discount to spot $${spot.toFixed(2)}.`,
+    `$${premium.toFixed(0)} premium (${(cycleYield * 100).toFixed(2)}% cycle, ${(ay * 100).toFixed(1)}% ann.) at delta ${put.delta.toFixed(2)}.`,
+    `Cash: $${cashRequired.toFixed(0)}/contract, ${maxContracts} affordable.`,
   ];
 
   return {
@@ -73,29 +77,14 @@ function evaluatePut(
     annualizedYield: ay,
     assignmentProb,
     score,
-    styleTag,
+    styleTag: styleTagFromDelta(absDelta),
     rationale,
     cashRequired,
   };
 }
 
 /**
- * Generate cash-secured put recommendations.
- *
- * Inputs:
- *   - watchlist:      symbols the user is willing to own
- *   - cashAvailable:  dollars not already tied up in other reserves
- *   - chains:         map from symbol → OptionChain
- *   - settings:       global defaults
- *   - overrides:      per-ticker overrides
- *
- * Output: ranked CSP recommendations, at most
- * `maxRecommendationsPerSymbol` per symbol, sorted by ticker then score.
- *
- * Assumptions:
- *   - Only OTM puts are considered.
- *   - Cash requirement is strike * 100 per contract (no margin offset).
- *   - assignmentProb ≈ |delta| (documented approximation).
+ * Generate CSP recommendations: 1 primary + 1 secondary per watchlist ticker.
  */
 export function generateCashSecuredPutRecommendations(
   watchlist: readonly string[],
@@ -131,7 +120,17 @@ export function generateCashSecuredPutRecommendations(
     }
 
     candidates.sort(deterministicScoreCompare);
-    results.push(...candidates.slice(0, eff.maxRecommendationsPerSymbol));
+
+    if (candidates.length > 0) {
+      results.push(candidates[0]!);
+      const primary = candidates[0]!;
+      const secondary = candidates.find(
+        (r) =>
+          r.contract.strike !== primary.contract.strike ||
+          r.expiration !== primary.expiration,
+      );
+      if (secondary) results.push(secondary);
+    }
   }
 
   return results;

@@ -1,83 +1,171 @@
 /**
- * Strategy settings: globally defined defaults and per-ticker overrides.
+ * Strategy settings: globally defined defaults, strategy mode, and per-ticker
+ * overrides including assignment intent.
  */
 
-export interface RollSettings {
-  /** When |delta| exceeds this, the delta trigger fires. */
-  readonly deltaThreshold: number;
-  /** When remaining DTE / original DTE falls below this, the DTE-ratio trigger fires. */
-  readonly dteRatioThreshold: number;
-  /** When |spot - strike| / spot <= this, the near-strike trigger fires. */
-  readonly nearStrikePct: number;
-  /** When remaining DTE <= this, the min-DTE trigger fires regardless. */
-  readonly minDte: number;
-  /** When (openPrice - currentMid) / openPrice >= this, the profit-capture trigger fires. */
-  readonly profitCapturePct: number;
-}
+// ---------------------------------------------------------------------------
+// Assignment preference — drives strike selection, delta, and scoring
+// ---------------------------------------------------------------------------
 
-export interface StrategySettings {
-  /** Absolute delta range the engine will consider (inclusive). */
-  readonly targetDeltaRange: readonly [number, number];
-  readonly minDTE: number;
-  readonly maxDTE: number;
-  /**
-   * Minimum premium as a fraction of the underlying's notional value.
-   * e.g. 0.005 means premium / (spot * 100) must be at least 0.5%.
-   */
-  readonly minPremiumPct: number;
-  /** Minimum annualized yield (premium/notional) * (365/DTE). */
-  readonly minAnnualizedYield: number;
-  /** Maximum number of recommendations to return per symbol per action type. */
-  readonly maxRecommendationsPerSymbol: number;
-  /** Roll trigger thresholds. */
-  readonly roll: RollSettings;
+/**
+ * Per-ticker assignment intent:
+ *   - "avoid"  — keep shares, prefer far OTM, enforce min upside
+ *   - "neutral" — standard wheel rules
+ *   - "prefer" — happy to get called away, tighter strikes OK
+ */
+export type AssignmentPreference = 'avoid' | 'neutral' | 'prefer';
+
+// ---------------------------------------------------------------------------
+// Strategy mode — global tilt for the entire portfolio
+// ---------------------------------------------------------------------------
+
+/**
+ * Global strategy posture:
+ *   - "incomeFocused" — higher deltas, shorter DTE, maximize premium
+ *   - "balanced"      — default middle ground
+ *   - "upsideFocused" — lower deltas, longer DTE, protect upside
+ */
+export type StrategyMode = 'incomeFocused' | 'balanced' | 'upsideFocused';
+
+/**
+ * Delta range adjustments applied by strategy mode on top of the configured
+ * targetDeltaRange. These shift the effective range.
+ */
+export function strategyModeDeltaShift(mode: StrategyMode): readonly [number, number] {
+  switch (mode) {
+    case 'incomeFocused':
+      return [0.05, 0.05];
+    case 'balanced':
+      return [0, 0];
+    case 'upsideFocused':
+      return [-0.05, -0.05];
+  }
 }
 
 /**
- * Override applied on top of global defaults for a specific ticker.
- * Present fields overwrite global values. `note` is for human documentation.
+ * DTE preference multiplier applied by strategy mode. >1 means prefer
+ * longer-dated expirations in scoring; <1 means prefer shorter.
  */
+export function strategyModeDteMultiplier(mode: StrategyMode): number {
+  switch (mode) {
+    case 'incomeFocused':
+      return 0.8;
+    case 'balanced':
+      return 1.0;
+    case 'upsideFocused':
+      return 1.2;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Roll settings
+// ---------------------------------------------------------------------------
+
+export interface RollSettings {
+  readonly deltaThreshold: number;
+  readonly dteRatioThreshold: number;
+  readonly nearStrikePct: number;
+  readonly minDte: number;
+  readonly profitCapturePct: number;
+}
+
+// ---------------------------------------------------------------------------
+// Global strategy settings
+// ---------------------------------------------------------------------------
+
+export interface StrategySettings {
+  readonly strategyMode: StrategyMode;
+  readonly targetDeltaRange: readonly [number, number];
+  readonly minDTE: number;
+  readonly maxDTE: number;
+  readonly minPremiumPct: number;
+  readonly minAnnualizedYield: number;
+  readonly roll: RollSettings;
+}
+
+// ---------------------------------------------------------------------------
+// Per-ticker override
+// ---------------------------------------------------------------------------
+
 export interface TickerOverride {
   readonly symbol: string;
   readonly note?: string;
+  readonly assignmentPreference?: AssignmentPreference;
+  /** If true, the scoring engine penalizes capping upside too early. */
+  readonly compounder?: boolean;
+  /** Minimum upside % before assignment. Enforced as a hard filter for "avoid". */
+  readonly minUpsidePct?: number;
   readonly targetDeltaRange?: readonly [number, number];
   readonly minDTE?: number;
   readonly maxDTE?: number;
   readonly minPremiumPct?: number;
   readonly minAnnualizedYield?: number;
-  readonly maxRecommendationsPerSymbol?: number;
   readonly roll?: Partial<RollSettings>;
 }
 
+// ---------------------------------------------------------------------------
+// Effective settings (merge global + override)
+// ---------------------------------------------------------------------------
+
+export interface EffectiveTickerSettings {
+  readonly targetDeltaRange: readonly [number, number];
+  readonly minDTE: number;
+  readonly maxDTE: number;
+  readonly minPremiumPct: number;
+  readonly minAnnualizedYield: number;
+  readonly roll: RollSettings;
+  readonly assignmentPreference: AssignmentPreference;
+  readonly compounder: boolean;
+  readonly minUpsidePct: number;
+  readonly strategyMode: StrategyMode;
+}
+
 /**
- * Merge global settings with a ticker-specific override to compute the
- * effective settings for evaluation of a specific symbol.
+ * Merge global settings + strategy mode adjustments + ticker override into
+ * the effective settings used by the engine for one symbol.
  */
 export function effectiveSettings(
   global: StrategySettings,
   override: TickerOverride | undefined,
-): StrategySettings {
-  if (!override) return global;
+): EffectiveTickerSettings {
+  const mode = global.strategyMode;
+  const [dLo, dHi] = strategyModeDeltaShift(mode);
+
+  // Base delta range from override or global, then shift by mode.
+  const baseDelta = override?.targetDeltaRange ?? global.targetDeltaRange;
+  const deltaRange: readonly [number, number] = [
+    Math.max(0.01, baseDelta[0] + dLo),
+    Math.min(0.99, baseDelta[1] + dHi),
+  ];
+
+  // Assignment preference defaults to "neutral".
+  const assignmentPreference = override?.assignmentPreference ?? 'neutral';
+
+  // For "avoid" tickers without an explicit minUpsidePct, default to 5%.
+  const defaultMinUpside = assignmentPreference === 'avoid' ? 0.05 : 0;
+  const minUpsidePct = override?.minUpsidePct ?? defaultMinUpside;
+
   return {
-    targetDeltaRange: override.targetDeltaRange ?? global.targetDeltaRange,
-    minDTE: override.minDTE ?? global.minDTE,
-    maxDTE: override.maxDTE ?? global.maxDTE,
-    minPremiumPct: override.minPremiumPct ?? global.minPremiumPct,
+    targetDeltaRange: deltaRange,
+    minDTE: override?.minDTE ?? global.minDTE,
+    maxDTE: override?.maxDTE ?? global.maxDTE,
+    minPremiumPct: override?.minPremiumPct ?? global.minPremiumPct,
     minAnnualizedYield:
-      override.minAnnualizedYield ?? global.minAnnualizedYield,
-    maxRecommendationsPerSymbol:
-      override.maxRecommendationsPerSymbol ??
-      global.maxRecommendationsPerSymbol,
+      override?.minAnnualizedYield ?? global.minAnnualizedYield,
     roll: {
       deltaThreshold:
-        override.roll?.deltaThreshold ?? global.roll.deltaThreshold,
+        override?.roll?.deltaThreshold ?? global.roll.deltaThreshold,
       dteRatioThreshold:
-        override.roll?.dteRatioThreshold ?? global.roll.dteRatioThreshold,
+        override?.roll?.dteRatioThreshold ?? global.roll.dteRatioThreshold,
       nearStrikePct:
-        override.roll?.nearStrikePct ?? global.roll.nearStrikePct,
-      minDte: override.roll?.minDte ?? global.roll.minDte,
+        override?.roll?.nearStrikePct ?? global.roll.nearStrikePct,
+      minDte: override?.roll?.minDte ?? global.roll.minDte,
       profitCapturePct:
-        override.roll?.profitCapturePct ?? global.roll.profitCapturePct,
+        override?.roll?.profitCapturePct ?? global.roll.profitCapturePct,
     },
+    assignmentPreference,
+    compounder: override?.compounder ?? false,
+    minUpsidePct,
+    strategyMode: mode,
   };
 }

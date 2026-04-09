@@ -28,7 +28,7 @@ import {
   type StrategySettings,
   type TickerOverride,
 } from '../types/settings.js';
-import { annualizedYield, computeScore } from './scoring.js';
+import { annualizedYield, computeScore, type ScoreInputs } from './scoring.js';
 
 interface CurrentContractView {
   readonly mid: number;
@@ -227,7 +227,16 @@ export function generateRollRecommendations(
           : (chain.underlyingPrice - cand.contract.strike) /
             chain.underlyingPrice;
       const assignmentProb = Math.abs(cand.contract.delta);
-      const score = computeScore(ay, upsidePct, assignmentProb);
+      const scoreInputs: ScoreInputs = {
+        annualizedYield: ay,
+        distancePct: upsidePct,
+        assignmentProb,
+        costBasisMarginPct: upsidePct,
+        assignmentPreference: eff.assignmentPreference,
+        strategyMode: eff.strategyMode,
+        compounder: false,
+      };
+      const score = computeScore(scoreInputs);
       return { cand, ay, upsidePct, assignmentProb, score };
     });
 

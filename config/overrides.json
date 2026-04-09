@@ -1,13 +1,35 @@
 [
   {
     "symbol": "TSLA",
-    "targetDeltaRange": [0.15, 0.25],
-    "note": "Tighter delta band — keep assignment risk lower on a volatile name"
+    "assignmentPreference": "avoid",
+    "compounder": true,
+    "minUpsidePct": 0.08,
+    "targetDeltaRange": [0.10, 0.20],
+    "note": "Long-term compounder. Avoid assignment, keep wide upside buffer."
+  },
+  {
+    "symbol": "MSFT",
+    "assignmentPreference": "avoid",
+    "compounder": true,
+    "minUpsidePct": 0.03,
+    "targetDeltaRange": [0.10, 0.25],
+    "note": "Core holding. Strongly avoid assignment."
+  },
+  {
+    "symbol": "PLTR",
+    "assignmentPreference": "neutral",
+    "note": "Growth name, OK to collect premium but watch cost basis."
+  },
+  {
+    "symbol": "IREN",
+    "assignmentPreference": "neutral",
+    "note": "Volatile small-cap. Standard wheel rules."
   },
   {
     "symbol": "OPEN",
+    "assignmentPreference": "prefer",
     "minPremiumPct": 0.002,
-    "minAnnualizedYield": 0.10,
-    "note": "Accept lower absolute premium since the underlying is cheap"
+    "minAnnualizedYield": 0.08,
+    "note": "Large lot, cheap stock. Happy to get called away at a profit."
   }
 ]

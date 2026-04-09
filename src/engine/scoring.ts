@@ -1,48 +1,107 @@
 /**
- * Shared scoring helpers used by the CC, CSP, and roll engines.
+ * Scoring engine — assignment-intent-aware, cost-basis-aware, compounder-aware.
  *
- * Score is a weighted combination of:
- *   - annualized yield (higher is better)
- *   - distance from spot (higher is better; measured by |upsidePct|)
- *   - (1 - assignmentProb) so lower assignment risk scores higher
+ * The score is a weighted sum of normalized components in [0, 1]:
  *
- * Weights are fixed and documented here so the CLI output is deterministic.
+ *   1. Yield         — annualized yield (higher = better)
+ *   2. Safety        — 1 - assignmentProb (lower delta = safer)
+ *   3. Upside room   — distance from spot (higher = more room to run)
+ *   4. Cost basis    — (strike - costBasis) / costBasis (assignment profit margin)
+ *
+ * Weights shift based on:
+ *   - assignmentPreference: "avoid" → safety/upside heavy; "prefer" → yield heavy
+ *   - strategyMode: "incomeFocused" → yield heavy; "upsideFocused" → upside heavy
+ *   - compounder flag: additional penalty for capping upside too early
  */
 
-export const SCORE_WEIGHTS = {
-  yield: 0.5,
-  distance: 0.25,
-  safety: 0.25,
-} as const;
+import type { AssignmentPreference, StrategyMode } from '../types/settings.js';
 
-/**
- * Combine the three normalized components into a single score in [0, 1].
- *
- * `annualizedYield` is clamped to [0, 2] then divided by 2.
- * `distancePct` is clamped to [0, 0.3] then divided by 0.3.
- * `assignmentProb` is clamped to [0, 1].
- */
-export function computeScore(
-  annualizedYield: number,
-  distancePct: number,
-  assignmentProb: number,
-): number {
-  const yieldNorm = Math.max(0, Math.min(2, annualizedYield)) / 2;
-  const distNorm = Math.max(0, Math.min(0.3, distancePct)) / 0.3;
-  const safetyNorm = 1 - Math.max(0, Math.min(1, assignmentProb));
-  return (
-    SCORE_WEIGHTS.yield * yieldNorm +
-    SCORE_WEIGHTS.distance * distNorm +
-    SCORE_WEIGHTS.safety * safetyNorm
-  );
+export interface ScoreInputs {
+  readonly annualizedYield: number;
+  readonly distancePct: number;
+  readonly assignmentProb: number;
+  readonly costBasisMarginPct: number;
+  readonly assignmentPreference: AssignmentPreference;
+  readonly strategyMode: StrategyMode;
+  readonly compounder: boolean;
+}
+
+interface Weights {
+  yield: number;
+  safety: number;
+  upside: number;
+  costBasis: number;
+}
+
+function baseWeights(pref: AssignmentPreference, mode: StrategyMode): Weights {
+  // Start from assignment preference.
+  let w: Weights;
+  switch (pref) {
+    case 'avoid':
+      w = { yield: 0.20, safety: 0.35, upside: 0.30, costBasis: 0.15 };
+      break;
+    case 'prefer':
+      w = { yield: 0.45, safety: 0.10, upside: 0.15, costBasis: 0.30 };
+      break;
+    default:
+      w = { yield: 0.35, safety: 0.25, upside: 0.20, costBasis: 0.20 };
+  }
+
+  // Tilt by strategy mode.
+  switch (mode) {
+    case 'incomeFocused':
+      w.yield += 0.08;
+      w.upside -= 0.05;
+      w.safety -= 0.03;
+      break;
+    case 'upsideFocused':
+      w.upside += 0.08;
+      w.yield -= 0.05;
+      w.safety += 0.02;
+      w.costBasis -= 0.05;
+      break;
+  }
+
+  // Renormalize to sum=1.
+  const total = w.yield + w.safety + w.upside + w.costBasis;
+  w.yield /= total;
+  w.safety /= total;
+  w.upside /= total;
+  w.costBasis /= total;
+  return w;
 }
 
 /**
- * Compute annualized yield for a short premium trade:
- *   (premium / notional) * (365 / dte)
- *
- * `notional` is the capital tied up: underlying * 100 for CCs (the value of
- * 100 shares), or strike * 100 for CSPs (cash reserve).
+ * Compute a score in [0, 1] that reflects how well a candidate fits the
+ * user's intent for a given ticker.
+ */
+export function computeScore(inputs: ScoreInputs): number {
+  const w = baseWeights(inputs.assignmentPreference, inputs.strategyMode);
+
+  const yieldNorm = Math.max(0, Math.min(2, inputs.annualizedYield)) / 2;
+  const safetyNorm = 1 - Math.max(0, Math.min(1, inputs.assignmentProb));
+  const upsideNorm = Math.max(0, Math.min(0.3, inputs.distancePct)) / 0.3;
+  const cbNorm = Math.max(0, Math.min(1, inputs.costBasisMarginPct));
+
+  let score =
+    w.yield * yieldNorm +
+    w.safety * safetyNorm +
+    w.upside * upsideNorm +
+    w.costBasis * cbNorm;
+
+  // Compounder penalty: if this is a strong compounder and the strike is
+  // too close to spot (< 10% upside), apply a penalty that scales with
+  // proximity. This discourages capping gains on stocks you expect to run.
+  if (inputs.compounder && inputs.distancePct < 0.10) {
+    const proximityPenalty = (0.10 - inputs.distancePct) / 0.10; // 0..1
+    score *= 1 - 0.25 * proximityPenalty;
+  }
+
+  return Math.max(0, Math.min(1, score));
+}
+
+/**
+ * Compute annualized yield: (premium / notional) * (365 / dte).
  */
 export function annualizedYield(
   premiumDollars: number,

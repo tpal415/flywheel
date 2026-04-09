@@ -1,18 +1,16 @@
 #!/usr/bin/env node
 /**
- * CLI harness for the wheel copilot core engine.
+ * CLI harness — personalized wheel copilot.
  *
- * Run with `npm run cli`. Prints four sections:
- *   1. COVERED CALLS  — top 3 CC recs per held ticker, grouped by symbol
- *   2. ROLL ALERTS    — open positions hitting a roll trigger
- *   3. CSP IDEAS      — cash-secured put candidates (separate from CCs)
- *   4. INCOME SUMMARY — captured + projected premium dollars
- *
- * No broker calls. No network. No state. Reads from config/ JSON files.
+ * Sections:
+ *   1. COVERED CALLS — 1 primary + 1 alt per ticker, with recommended action
+ *   2. ROLL ALERTS   — triggered positions
+ *   3. CSP IDEAS     — 1 primary + 1 alt per watchlist ticker
+ *   4. INCOME SUMMARY
  */
 
 import Table from 'cli-table3';
-import { loadConfig } from '../config/index.js';
+import { loadConfig, type LoadedConfig } from '../config/index.js';
 import {
   generateCashSecuredPutRecommendations,
   generateCoveredCallRecommendations,
@@ -24,6 +22,7 @@ import type {
   SellCashSecuredPutRecommendation,
   SellCoveredCallRecommendation,
 } from '../types/recommendations.js';
+import { effectiveSettings, type TickerOverride } from '../types/settings.js';
 
 function pct(x: number, digits = 1): string {
   return `${(x * 100).toFixed(digits)}%`;
@@ -38,7 +37,6 @@ function printHeader(title: string): void {
   console.log(`\n${bar}\n  ${title}\n${bar}`);
 }
 
-/** Group an array by a key function, preserving insertion order. */
 function groupBy<T>(arr: readonly T[], key: (t: T) => string): Map<string, T[]> {
   const map = new Map<string, T[]>();
   for (const item of arr) {
@@ -53,12 +51,21 @@ function groupBy<T>(arr: readonly T[], key: (t: T) => string): Map<string, T[]> 
   return map;
 }
 
+function prefLabel(pref: string): string {
+  switch (pref) {
+    case 'avoid': return 'AVOID assignment';
+    case 'prefer': return 'OK to assign';
+    default: return 'neutral';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Section 1: Covered Calls
 // ---------------------------------------------------------------------------
 
 function printCoveredCalls(
   ccs: readonly SellCoveredCallRecommendation[],
+  cfg: LoadedConfig,
 ): void {
   printHeader('1. COVERED CALLS');
   if (ccs.length === 0) {
@@ -66,69 +73,58 @@ function printCoveredCalls(
     return;
   }
 
+  const overrideBySymbol = new Map<string, TickerOverride>();
+  for (const o of cfg.overrides) overrideBySymbol.set(o.symbol, o);
   const grouped = groupBy(ccs, (r) => r.symbol);
 
   for (const [symbol, recs] of grouped) {
-    const first = recs[0]!;
-    console.log(
-      `\n  ${symbol}  (spot $${first.currentPrice.toFixed(2)}, ${first.contractsAvailable} contracts available)`,
-    );
+    const primary = recs[0]!;
+    const alt = recs[1];
+    const eff = effectiveSettings(cfg.settings, overrideBySymbol.get(symbol));
+    const stock = cfg.portfolio.stocks.find((s) => s.symbol === symbol)!;
+    const gain = ((primary.currentPrice - stock.avgCostBasis) / stock.avgCostBasis * 100).toFixed(1);
+
+    console.log(`\n  ${symbol}  spot $${primary.currentPrice.toFixed(2)} | cost $${stock.avgCostBasis.toFixed(2)} (${Number(gain) >= 0 ? '+' : ''}${gain}%) | ${primary.contractsAvailable}x100 avail | ${prefLabel(eff.assignmentPreference)}${eff.compounder ? ' | compounder' : ''}`);
+    console.log(`  >> Sell ${primary.contractsAvailable}x ${symbol} $${primary.contract.strike.toFixed(2)}C ${primary.expiration} (${primary.contract.dte}d)`);
 
     const table = new Table({
-      head: [
-        '#',
-        'Strike',
-        'Exp',
-        'DTE',
-        'Style',
-        'Prem/c',
-        'Total',
-        'Cycle%',
-        'Ann%',
-        'Upside%',
-        'P(asgn)',
-        'Score',
-      ],
-      colAligns: [
-        'right',
-        'right',
-        'left',
-        'right',
-        'left',
-        'right',
-        'right',
-        'right',
-        'right',
-        'right',
-        'right',
-        'right',
-      ],
+      head: ['', 'Strike', 'Exp', 'DTE', 'Prem/c', 'Total', 'Cycle%', 'Upside%', 'P(asgn)', 'Score'],
+      colAligns: ['left', 'right', 'left', 'right', 'right', 'right', 'right', 'right', 'right', 'right'],
       style: { head: ['cyan'] },
     });
 
-    recs.forEach((r, i) => {
+    table.push([
+      'Primary',
+      money(primary.contract.strike, 2),
+      primary.expiration,
+      String(primary.contract.dte),
+      money(primary.premium, 0),
+      money(primary.totalPremium, 0),
+      pct(primary.cycleYield, 2),
+      pct(primary.upsidePct, 1),
+      pct(primary.assignmentProb, 0),
+      primary.score.toFixed(3),
+    ]);
+
+    if (alt) {
       table.push([
-        String(i + 1),
-        money(r.contract.strike, 2),
-        r.expiration,
-        String(r.contract.dte),
-        r.styleTag,
-        money(r.premium, 0),
-        money(r.totalPremium, 0),
-        pct(r.cycleYield, 2),
-        pct(r.annualizedYield, 1),
-        pct(r.upsidePct, 1),
-        pct(r.assignmentProb, 0),
-        r.score.toFixed(3),
+        'Alt',
+        money(alt.contract.strike, 2),
+        alt.expiration,
+        String(alt.contract.dte),
+        money(alt.premium, 0),
+        money(alt.totalPremium, 0),
+        pct(alt.cycleYield, 2),
+        pct(alt.upsidePct, 1),
+        pct(alt.assignmentProb, 0),
+        alt.score.toFixed(3),
       ]);
-    });
+    }
     console.log(table.toString());
 
-    // Rationale for the top pick.
-    const top = recs[0]!;
-    console.log(`  Top pick rationale:`);
-    for (const line of top.rationale) {
-      console.log(`    - ${line}`);
+    // Rationale (2-3 lines).
+    for (const line of primary.rationale) {
+      console.log(`    ${line}`);
     }
   }
 }
@@ -140,61 +136,20 @@ function printCoveredCalls(
 function printRollAlerts(rolls: readonly RollRecommendation[]): void {
   printHeader('2. ROLL ALERTS');
   if (rolls.length === 0) {
-    console.log('(no open positions are hitting roll triggers)');
+    console.log('(no positions hitting roll triggers)');
     return;
   }
 
   for (const r of rolls) {
-    console.log(
-      `\n  ${r.symbol} — position ${r.relatedPositionId}`,
-    );
+    console.log(`\n  ${r.symbol} — ${r.relatedPositionId}`);
+    console.log(`  >> Roll to $${r.contract.strike.toFixed(2)} ${r.expiration} (${r.contract.dte}d) for ${money(r.netCredit)} net credit`);
 
-    const table = new Table({
-      head: [
-        'Current',
-        'Roll To',
-        'New Exp',
-        'DTE',
-        'Net Credit',
-        'New Delta',
-        'Style',
-        'Score',
-      ],
-      colAligns: [
-        'left',
-        'right',
-        'left',
-        'right',
-        'right',
-        'right',
-        'left',
-        'right',
-      ],
-      style: { head: ['yellow'] },
-    });
-
-    table.push([
-      `$${r.triggers.length > 0 ? r.relatedPositionId.split('-').slice(2).join(' ').toUpperCase() : ''}`,
-      money(r.contract.strike, 2),
-      r.expiration,
-      String(r.contract.dte),
-      money(r.netCredit, 0),
-      r.contract.delta.toFixed(2),
-      r.styleTag,
-      r.score.toFixed(3),
-    ]);
-    console.log(table.toString());
-
-    // Print each trigger that fired.
     console.log('  Triggers:');
     for (const t of r.triggers) {
       console.log(`    [${t.label}] ${t.message}`);
     }
-
-    // Rationale.
-    console.log('  Action:');
     for (const line of r.rationale.slice(1)) {
-      console.log(`    - ${line}`);
+      console.log(`    ${line}`);
     }
   }
 }
@@ -209,77 +164,57 @@ function printCspIdeas(
 ): void {
   printHeader('3. CSP IDEAS');
   if (csps.length === 0) {
-    console.log('(no cash-secured put candidates matched current filters)');
+    console.log('(no CSP candidates — cash or filters too tight)');
     return;
   }
 
   console.log(`  Cash available: ${money(cashAvailable)}\n`);
-
   const grouped = groupBy(csps, (r) => r.symbol);
 
   for (const [symbol, recs] of grouped) {
-    const first = recs[0]!;
-    console.log(
-      `  ${symbol}  (spot $${first.currentPrice.toFixed(2)})`,
-    );
+    const primary = recs[0]!;
+    const alt = recs[1];
+
+    console.log(`  ${symbol}  spot $${primary.currentPrice.toFixed(2)}`);
+    console.log(`  >> Sell ${symbol} $${primary.contract.strike.toFixed(2)}P ${primary.expiration} (${primary.contract.dte}d) — ${money(primary.premium)}/c`);
 
     const table = new Table({
-      head: [
-        '#',
-        'Strike',
-        'Exp',
-        'DTE',
-        'Style',
-        'Prem/c',
-        'Cash/c',
-        'Ctrs',
-        'Cycle%',
-        'Ann%',
-        'Discount%',
-        'P(asgn)',
-        'Score',
-      ],
-      colAligns: [
-        'right',
-        'right',
-        'left',
-        'right',
-        'left',
-        'right',
-        'right',
-        'right',
-        'right',
-        'right',
-        'right',
-        'right',
-        'right',
-      ],
+      head: ['', 'Strike', 'Exp', 'DTE', 'Prem/c', 'Cash/c', 'Cycle%', 'Disc%', 'P(asgn)', 'Score'],
+      colAligns: ['left', 'right', 'left', 'right', 'right', 'right', 'right', 'right', 'right', 'right'],
       style: { head: ['green'] },
     });
 
-    recs.forEach((r, i) => {
+    table.push([
+      'Primary',
+      money(primary.contract.strike, 2),
+      primary.expiration,
+      String(primary.contract.dte),
+      money(primary.premium, 0),
+      money(primary.cashRequired, 0),
+      pct(primary.cycleYield, 2),
+      pct(primary.upsidePct, 1),
+      pct(primary.assignmentProb, 0),
+      primary.score.toFixed(3),
+    ]);
+
+    if (alt) {
       table.push([
-        String(i + 1),
-        money(r.contract.strike, 2),
-        r.expiration,
-        String(r.contract.dte),
-        r.styleTag,
-        money(r.premium, 0),
-        money(r.cashRequired, 0),
-        String(r.contractsAvailable),
-        pct(r.cycleYield, 2),
-        pct(r.annualizedYield, 1),
-        pct(r.upsidePct, 1),
-        pct(r.assignmentProb, 0),
-        r.score.toFixed(3),
+        'Alt',
+        money(alt.contract.strike, 2),
+        alt.expiration,
+        String(alt.contract.dte),
+        money(alt.premium, 0),
+        money(alt.cashRequired, 0),
+        pct(alt.cycleYield, 2),
+        pct(alt.upsidePct, 1),
+        pct(alt.assignmentProb, 0),
+        alt.score.toFixed(3),
       ]);
-    });
+    }
     console.log(table.toString());
 
-    const top = recs[0]!;
-    console.log(`  Top pick rationale:`);
-    for (const line of top.rationale) {
-      console.log(`    - ${line}`);
+    for (const line of primary.rationale) {
+      console.log(`    ${line}`);
     }
     console.log('');
   }
@@ -292,27 +227,27 @@ function printCspIdeas(
 function printIncomeSummary(
   portfolio: {
     closedTrades: readonly { netPremium: number }[];
-    options: readonly {
-      side: string;
-      openPrice: number;
-      contracts: number;
-    }[];
+    options: readonly { side: string; openPrice: number; contracts: number }[];
   },
   ccs: readonly SellCoveredCallRecommendation[],
   csps: readonly SellCashSecuredPutRecommendation[],
 ): void {
   printHeader('4. INCOME SUMMARY');
-  const captured = portfolio.closedTrades.reduce(
-    (s, t) => s + t.netPremium,
-    0,
-  );
+  const captured = portfolio.closedTrades.reduce((s, t) => s + t.netPremium, 0);
   const openRisk = portfolio.options.reduce(
-    (s, o) =>
-      o.side === 'SHORT' ? s + o.openPrice * 100 * o.contracts : s,
-    0,
+    (s, o) => (o.side === 'SHORT' ? s + o.openPrice * 100 * o.contracts : s), 0,
   );
-  const projectedCc = ccs.reduce((s, r) => s + r.totalPremium, 0);
-  const projectedCsp = csps.reduce((s, r) => s + r.premium, 0);
+  // Only count primaries (index 0 per ticker group) for projections.
+  const grouped = groupBy(ccs, (r) => r.symbol);
+  let projectedCc = 0;
+  for (const [, recs] of grouped) {
+    if (recs[0]) projectedCc += recs[0].totalPremium;
+  }
+  const cspGrouped = groupBy(csps, (r) => r.symbol);
+  let projectedCsp = 0;
+  for (const [, recs] of cspGrouped) {
+    if (recs[0]) projectedCsp += recs[0].premium;
+  }
 
   const table = new Table({
     head: ['Metric', 'Amount'],
@@ -320,21 +255,19 @@ function printIncomeSummary(
   });
   table.push(
     ['Premium captured (closed trades)', money(captured)],
-    ['Open premium at risk (collected)', money(openRisk)],
-    ['Projected CC premium (all tickers, top picks)', money(projectedCc)],
-    ['Projected CSP premium (top picks, 1 contract each)', money(projectedCsp)],
+    ['Open premium at risk', money(openRisk)],
+    ['Projected CC income (primary picks)', money(projectedCc)],
+    ['Projected CSP income (primary picks)', money(projectedCsp)],
     ['Total projected this cycle', money(projectedCc + projectedCsp)],
   );
   console.log(table.toString());
 }
 
 // ---------------------------------------------------------------------------
-// Dedup helper
+// Dedup
 // ---------------------------------------------------------------------------
 
-function dedupeRecs<R extends Recommendation>(
-  recs: readonly R[],
-): readonly R[] {
+function dedupeRecs<R extends Recommendation>(recs: readonly R[]): readonly R[] {
   const seen = new Set<string>();
   const out: R[] = [];
   for (const r of recs) {
@@ -355,38 +288,24 @@ function main(): void {
 
   const ccs = dedupeRecs(
     generateCoveredCallRecommendations(
-      cfg.portfolio,
-      cfg.chains,
-      cfg.settings,
-      cfg.overrides,
+      cfg.portfolio, cfg.chains, cfg.settings, cfg.overrides,
     ),
   );
   const csps = dedupeRecs(
     generateCashSecuredPutRecommendations(
-      cfg.portfolio.watchlist,
-      cfg.portfolio.cash,
-      cfg.chains,
-      cfg.settings,
-      cfg.overrides,
+      cfg.portfolio.watchlist, cfg.portfolio.cash, cfg.chains, cfg.settings, cfg.overrides,
     ),
   );
   const rolls = generateRollRecommendations(
-    cfg.portfolio.options,
-    cfg.chains,
-    cfg.settings,
-    cfg.overrides,
+    cfg.portfolio.options, cfg.chains, cfg.settings, cfg.overrides,
   );
 
-  console.log(`Flywheel Wheel Copilot — ${cfg.evaluationDate}`);
-  console.log(`Cash: ${money(cfg.portfolio.cash)}`);
+  console.log(`Flywheel — ${cfg.evaluationDate} | mode: ${cfg.settings.strategyMode}`);
   console.log(
-    `Holdings: ${cfg.portfolio.stocks.map((s) => `${s.symbol} x${s.shares} @ $${s.currentPrice.toFixed(2)}`).join(', ')}`,
-  );
-  console.log(
-    `Config: config/holdings.json, config/market.json, config/settings.json`,
+    `Holdings: ${cfg.portfolio.stocks.map((s) => `${s.symbol} x${s.shares}`).join(', ')} | Cash: ${money(cfg.portfolio.cash)}`,
   );
 
-  printCoveredCalls(ccs);
+  printCoveredCalls(ccs, cfg);
   printRollAlerts(rolls);
   printCspIdeas(csps, cfg.portfolio.cash);
   printIncomeSummary(cfg.portfolio, ccs, csps);

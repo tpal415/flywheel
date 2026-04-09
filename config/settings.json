@@ -1,10 +1,11 @@
 {
+  "strategyMode": "balanced",
+
   "targetDeltaRange": [0.15, 0.35],
   "minDTE": 5,
   "maxDTE": 50,
   "minPremiumPct": 0.003,
-  "minAnnualizedYield": 0.15,
-  "maxRecommendationsPerSymbol": 3,
+  "minAnnualizedYield": 0.10,
 
   "roll": {
     "deltaThreshold": 0.50,

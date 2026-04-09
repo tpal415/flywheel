@@ -1,15 +1,13 @@
 /**
- * Covered call recommendation engine.
+ * Covered call recommendation engine — assignment-intent-aware.
  *
- * Given a portfolio, option chains, and strategy settings, returns the
- * top-ranked short-call candidates for each eligible stock position.
- *
- * Phase 2 additions:
- *   - styleTag (Safer / Balanced / Income) based on |delta|
- *   - cycleYield (raw premium/notional, not annualized)
- *   - contractsAvailable / totalPremium for multi-lot positions
- *   - currentPrice on every rec for display
- *   - richer rationale explaining why strike + expiration fits settings
+ * For each eligible stock position, returns a primary and secondary
+ * recommendation. Filtering and scoring respect:
+ *   - assignmentPreference (avoid/neutral/prefer)
+ *   - compounder flag (penalty for capping upside too early)
+ *   - minUpsidePct (hard floor for "avoid" tickers)
+ *   - strategyMode (shifts delta + scoring weights)
+ *   - cost basis distance (assignment profitability)
  */
 
 import type { OptionChain, OptionContract } from '../types/chains.js';
@@ -22,14 +20,12 @@ import type { SellCoveredCallRecommendation } from '../types/recommendations.js'
 import { styleTagFromDelta } from '../types/recommendations.js';
 import {
   effectiveSettings,
+  type EffectiveTickerSettings,
   type StrategySettings,
   type TickerOverride,
 } from '../types/settings.js';
 import { annualizedYield, computeScore } from './scoring.js';
 
-/**
- * Calculate the number of shares already reserved by existing short calls.
- */
 function sharesCoveredByShortCalls(
   symbol: string,
   options: readonly OptionPosition[],
@@ -42,57 +38,66 @@ function sharesCoveredByShortCalls(
 }
 
 /**
- * Select candidate contracts from a chain for covered-call sales.
+ * Find all valid CC candidates for a stock position.
  *
- * Filters applied:
- *  - DTE in [minDTE, maxDTE]
- *  - strike >= avgCostBasis (never sell calls below cost)
- *  - strike > currentPrice (OTM only)
- *  - |delta| within the target range
- *  - premium % >= minPremiumPct
- *  - annualized yield >= minAnnualizedYield
+ * Hard filters:
+ *   - DTE in range
+ *   - strike >= cost basis
+ *   - strike > spot (OTM only)
+ *   - |delta| in effective range
+ *   - premium pct >= min
+ *   - upside >= minUpsidePct (critical for "avoid" tickers)
  */
-function findCoveredCallCandidates(
+function findCandidates(
   stock: StockPosition,
   chain: OptionChain,
-  settings: StrategySettings,
+  eff: EffectiveTickerSettings,
   contractsAvailable: number,
 ): readonly SellCoveredCallRecommendation[] {
-  const [lo, hi] = settings.targetDeltaRange;
+  const [lo, hi] = eff.targetDeltaRange;
   const recs: SellCoveredCallRecommendation[] = [];
 
   for (const slice of chain.expirations) {
     for (const call of slice.calls) {
-      if (call.dte < settings.minDTE || call.dte > settings.maxDTE) continue;
+      if (call.dte < eff.minDTE || call.dte > eff.maxDTE) continue;
       if (call.strike < stock.avgCostBasis) continue;
       if (call.strike <= stock.currentPrice) continue;
+
       const absDelta = Math.abs(call.delta);
       if (absDelta < lo || absDelta > hi) continue;
+
+      const upsidePct =
+        (call.strike - stock.currentPrice) / stock.currentPrice;
+
+      // Hard floor: "avoid" tickers must have enough upside room.
+      if (upsidePct < eff.minUpsidePct) continue;
 
       const premium = call.mid * 100;
       const notional = stock.currentPrice * 100;
       const premiumPct = premium / notional;
-      if (premiumPct < settings.minPremiumPct) continue;
+      if (premiumPct < eff.minPremiumPct) continue;
 
       const ay = annualizedYield(premium, notional, call.dte);
-      if (ay < settings.minAnnualizedYield) continue;
+      if (ay < eff.minAnnualizedYield) continue;
 
       const cycleYield = notional > 0 ? premium / notional : 0;
-      const upsidePct =
-        (call.strike - stock.currentPrice) / stock.currentPrice;
       const assignmentProb = absDelta;
-      const score = computeScore(ay, upsidePct, assignmentProb);
-      const styleTag = styleTagFromDelta(absDelta);
-      const rationale = buildRationale(
-        stock,
-        call,
-        premium,
-        ay,
-        cycleYield,
-        upsidePct,
-        styleTag,
-        settings,
-      );
+      const costBasisMarginPct =
+        stock.avgCostBasis > 0
+          ? (call.strike - stock.avgCostBasis) / stock.avgCostBasis
+          : 0;
+
+      const score = computeScore({
+        annualizedYield: ay,
+        distancePct: upsidePct,
+        assignmentProb,
+        costBasisMarginPct,
+        assignmentPreference: eff.assignmentPreference,
+        strategyMode: eff.strategyMode,
+        compounder: eff.compounder,
+      });
+
+      const rationale = buildRationale(stock, call, premium, ay, cycleYield, upsidePct, eff);
 
       recs.push({
         symbol: stock.symbol,
@@ -108,7 +113,7 @@ function findCoveredCallCandidates(
         annualizedYield: ay,
         assignmentProb,
         score,
-        styleTag,
+        styleTag: styleTagFromDelta(absDelta),
         rationale,
       });
     }
@@ -124,40 +129,49 @@ function buildRationale(
   ay: number,
   cycleYield: number,
   upsidePct: number,
-  styleTag: string,
-  settings: StrategySettings,
+  eff: EffectiveTickerSettings,
 ): readonly string[] {
   const lines: string[] = [];
+  const absDelta = Math.abs(call.delta);
+  const prefLabel =
+    eff.assignmentPreference === 'avoid'
+      ? 'Protecting upside'
+      : eff.assignmentPreference === 'prefer'
+        ? 'Maximizing income'
+        : 'Balancing income vs. upside';
+
   lines.push(
-    `${styleTag} pick: delta ${call.delta.toFixed(2)} within [${settings.targetDeltaRange[0]}, ${settings.targetDeltaRange[1]}] range.`,
+    `${prefLabel}: ${(upsidePct * 100).toFixed(1)}% room above $${stock.currentPrice.toFixed(2)} before assignment at $${call.strike.toFixed(2)}.`,
   );
+
+  const cbMargin = ((call.strike - stock.avgCostBasis) / stock.avgCostBasis * 100).toFixed(1);
   lines.push(
-    `Strike $${call.strike.toFixed(2)} is ${(upsidePct * 100).toFixed(1)}% above spot $${stock.currentPrice.toFixed(2)} — room to run before assignment.`,
+    `Strike $${call.strike.toFixed(2)} is ${cbMargin}% above cost basis $${stock.avgCostBasis.toFixed(2)} — assignment locks in profit.`,
   );
+
   lines.push(
-    `Above cost basis $${stock.avgCostBasis.toFixed(2)} — assignment would be profitable.`,
+    `$${premium.toFixed(0)} premium (${(cycleYield * 100).toFixed(2)}% cycle, ${(ay * 100).toFixed(1)}% ann.) at delta ${absDelta.toFixed(2)} (${(absDelta * 100).toFixed(0)}% P(assign)).`,
   );
-  lines.push(
-    `$${premium.toFixed(0)} premium over ${call.dte}d = ${(cycleYield * 100).toFixed(2)}% cycle / ${(ay * 100).toFixed(1)}% annualized.`,
-  );
+
+  if (eff.compounder) {
+    lines.push(
+      `Compounder: further OTM preferred to avoid capping long-term upside.`,
+    );
+  }
+
   return lines;
 }
 
 /**
- * Generate covered-call recommendations across a portfolio.
+ * Generate covered-call recommendations: 1 primary + 1 secondary per ticker.
  *
  * Inputs:
- *   - portfolio:      user's full portfolio (stocks + open options)
- *   - chains:         map from symbol → OptionChain with fresh data
- *   - settings:       global strategy defaults
- *   - overrides:      per-ticker overrides applied on top of globals
+ *   - portfolio, chains, settings, overrides (as before)
  *
- * Output: top `maxRecommendationsPerSymbol` CC recs per eligible position,
- * sorted by score within each symbol. Symbols are sorted alphabetically.
- *
- * Assumptions:
- *   - A position is "eligible" iff it holds ≥100 uncovered shares.
- *   - assignmentProb ≈ |delta| (documented approximation).
+ * Output: exactly 2 recs per eligible ticker (or 1 if only 1 candidate
+ * passes filters), sorted alphabetically by symbol. Primary is the
+ * highest-scored candidate. Secondary is the next-best with a different
+ * strike or expiration.
  */
 export function generateCoveredCallRecommendations(
   portfolio: Portfolio,
@@ -170,7 +184,6 @@ export function generateCoveredCallRecommendations(
 
   const results: SellCoveredCallRecommendation[] = [];
 
-  // Sort stocks alphabetically for deterministic ticker ordering.
   const sortedStocks = [...portfolio.stocks].sort((a, b) =>
     a.symbol.localeCompare(b.symbol),
   );
@@ -181,28 +194,32 @@ export function generateCoveredCallRecommendations(
     if (uncovered < 100) continue;
 
     const contractsAvailable = Math.floor(uncovered / 100);
-
     const chain = chains.get(stock.symbol);
     if (!chain) continue;
 
     const eff = effectiveSettings(settings, overrideBySymbol.get(stock.symbol));
-    const candidates = findCoveredCallCandidates(
-      stock,
-      chain,
-      eff,
-      contractsAvailable,
-    );
+    const candidates = findCandidates(stock, chain, eff, contractsAvailable);
     const sorted = [...candidates].sort(deterministicScoreCompare);
-    results.push(...sorted.slice(0, eff.maxRecommendationsPerSymbol));
+
+    // Primary: best score.
+    if (sorted.length > 0) {
+      results.push(sorted[0]!);
+    }
+    // Secondary: next-best with a different strike OR expiration.
+    const primary = sorted[0];
+    if (primary) {
+      const secondary = sorted.find(
+        (r) =>
+          r.contract.strike !== primary.contract.strike ||
+          r.expiration !== primary.expiration,
+      );
+      if (secondary) results.push(secondary);
+    }
   }
 
   return results;
 }
 
-/**
- * Deterministic ordering: score desc, then yield desc, then strike asc,
- * then dte asc. Guarantees stable output across runs.
- */
 function deterministicScoreCompare(
   a: SellCoveredCallRecommendation,
   b: SellCoveredCallRecommendation,
