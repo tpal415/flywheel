@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "cli-table3": "^0.6.5"
+    "cli-table3": "^0.6.5",
+    "yahoo-finance2": "^3.14.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",

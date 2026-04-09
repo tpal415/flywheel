@@ -2,15 +2,19 @@
 /**
  * CLI harness — personalized wheel copilot.
  *
- * Sections:
- *   1. COVERED CALLS — 1 primary + 1 alt per ticker, with recommended action
- *   2. ROLL ALERTS   — triggered positions
- *   3. CSP IDEAS     — 1 primary + 1 alt per watchlist ticker
- *   4. INCOME SUMMARY
+ * Usage:
+ *   npm run cli               # mock mode (default, offline)
+ *   npm run cli -- --mode=real # real mode (Yahoo Finance, needs network)
+ *   npm run cli -- --mode=mock # explicit mock mode
  */
 
 import Table from 'cli-table3';
-import { loadConfig, type LoadedConfig } from '../config/index.js';
+import {
+  loadConfig,
+  loadConfigWithData,
+  type LoadedConfig,
+} from '../config/index.js';
+import { createProvider, type DataMode } from '../data/index.js';
 import {
   generateCashSecuredPutRecommendations,
   generateCoveredCallRecommendations,
@@ -23,6 +27,10 @@ import type {
   SellCoveredCallRecommendation,
 } from '../types/recommendations.js';
 import { effectiveSettings, type TickerOverride } from '../types/settings.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function pct(x: number, digits = 1): string {
   return `${(x * 100).toFixed(digits)}%`;
@@ -37,7 +45,10 @@ function printHeader(title: string): void {
   console.log(`\n${bar}\n  ${title}\n${bar}`);
 }
 
-function groupBy<T>(arr: readonly T[], key: (t: T) => string): Map<string, T[]> {
+function groupBy<T>(
+  arr: readonly T[],
+  key: (t: T) => string,
+): Map<string, T[]> {
   const map = new Map<string, T[]>();
   for (const item of arr) {
     const k = key(item);
@@ -53,10 +64,22 @@ function groupBy<T>(arr: readonly T[], key: (t: T) => string): Map<string, T[]> 
 
 function prefLabel(pref: string): string {
   switch (pref) {
-    case 'avoid': return 'AVOID assignment';
-    case 'prefer': return 'OK to assign';
-    default: return 'neutral';
+    case 'avoid':
+      return 'AVOID assignment';
+    case 'prefer':
+      return 'OK to assign';
+    default:
+      return 'neutral';
   }
+}
+
+function parseMode(): DataMode {
+  const arg = process.argv.find((a) => a.startsWith('--mode='));
+  if (!arg) return 'mock';
+  const val = arg.split('=')[1];
+  if (val === 'real' || val === 'mock') return val;
+  console.error(`Unknown mode "${val}", falling back to mock.`);
+  return 'mock';
 }
 
 // ---------------------------------------------------------------------------
@@ -80,16 +103,48 @@ function printCoveredCalls(
   for (const [symbol, recs] of grouped) {
     const primary = recs[0]!;
     const alt = recs[1];
-    const eff = effectiveSettings(cfg.settings, overrideBySymbol.get(symbol));
+    const eff = effectiveSettings(
+      cfg.settings,
+      overrideBySymbol.get(symbol),
+    );
     const stock = cfg.portfolio.stocks.find((s) => s.symbol === symbol)!;
-    const gain = ((primary.currentPrice - stock.avgCostBasis) / stock.avgCostBasis * 100).toFixed(1);
+    const gain = (
+      ((primary.currentPrice - stock.avgCostBasis) / stock.avgCostBasis) *
+      100
+    ).toFixed(1);
 
-    console.log(`\n  ${symbol}  spot $${primary.currentPrice.toFixed(2)} | cost $${stock.avgCostBasis.toFixed(2)} (${Number(gain) >= 0 ? '+' : ''}${gain}%) | ${primary.contractsAvailable}x100 avail | ${prefLabel(eff.assignmentPreference)}${eff.compounder ? ' | compounder' : ''}`);
-    console.log(`  >> Sell ${primary.contractsAvailable}x ${symbol} $${primary.contract.strike.toFixed(2)}C ${primary.expiration} (${primary.contract.dte}d)`);
+    console.log(
+      `\n  ${symbol}  spot $${primary.currentPrice.toFixed(2)} | cost $${stock.avgCostBasis.toFixed(2)} (${Number(gain) >= 0 ? '+' : ''}${gain}%) | ${primary.contractsAvailable}x100 avail | ${prefLabel(eff.assignmentPreference)}${eff.compounder ? ' | compounder' : ''}`,
+    );
+    console.log(
+      `  >> Sell ${primary.contractsAvailable}x ${symbol} $${primary.contract.strike.toFixed(2)}C ${primary.expiration} (${primary.contract.dte}d)`,
+    );
 
     const table = new Table({
-      head: ['', 'Strike', 'Exp', 'DTE', 'Prem/c', 'Total', 'Cycle%', 'Upside%', 'P(asgn)', 'Score'],
-      colAligns: ['left', 'right', 'left', 'right', 'right', 'right', 'right', 'right', 'right', 'right'],
+      head: [
+        '',
+        'Strike',
+        'Exp',
+        'DTE',
+        'Prem/c',
+        'Total',
+        'Cycle%',
+        'Upside%',
+        'P(asgn)',
+        'Score',
+      ],
+      colAligns: [
+        'left',
+        'right',
+        'left',
+        'right',
+        'right',
+        'right',
+        'right',
+        'right',
+        'right',
+        'right',
+      ],
       style: { head: ['cyan'] },
     });
 
@@ -122,7 +177,6 @@ function printCoveredCalls(
     }
     console.log(table.toString());
 
-    // Rationale (2-3 lines).
     for (const line of primary.rationale) {
       console.log(`    ${line}`);
     }
@@ -142,8 +196,9 @@ function printRollAlerts(rolls: readonly RollRecommendation[]): void {
 
   for (const r of rolls) {
     console.log(`\n  ${r.symbol} — ${r.relatedPositionId}`);
-    console.log(`  >> Roll to $${r.contract.strike.toFixed(2)} ${r.expiration} (${r.contract.dte}d) for ${money(r.netCredit)} net credit`);
-
+    console.log(
+      `  >> Roll to $${r.contract.strike.toFixed(2)} ${r.expiration} (${r.contract.dte}d) for ${money(r.netCredit)} net credit`,
+    );
     console.log('  Triggers:');
     for (const t of r.triggers) {
       console.log(`    [${t.label}] ${t.message}`);
@@ -176,11 +231,35 @@ function printCspIdeas(
     const alt = recs[1];
 
     console.log(`  ${symbol}  spot $${primary.currentPrice.toFixed(2)}`);
-    console.log(`  >> Sell ${symbol} $${primary.contract.strike.toFixed(2)}P ${primary.expiration} (${primary.contract.dte}d) — ${money(primary.premium)}/c`);
+    console.log(
+      `  >> Sell ${symbol} $${primary.contract.strike.toFixed(2)}P ${primary.expiration} (${primary.contract.dte}d) — ${money(primary.premium)}/c`,
+    );
 
     const table = new Table({
-      head: ['', 'Strike', 'Exp', 'DTE', 'Prem/c', 'Cash/c', 'Cycle%', 'Disc%', 'P(asgn)', 'Score'],
-      colAligns: ['left', 'right', 'left', 'right', 'right', 'right', 'right', 'right', 'right', 'right'],
+      head: [
+        '',
+        'Strike',
+        'Exp',
+        'DTE',
+        'Prem/c',
+        'Cash/c',
+        'Cycle%',
+        'Disc%',
+        'P(asgn)',
+        'Score',
+      ],
+      colAligns: [
+        'left',
+        'right',
+        'left',
+        'right',
+        'right',
+        'right',
+        'right',
+        'right',
+        'right',
+        'right',
+      ],
       style: { head: ['green'] },
     });
 
@@ -227,17 +306,25 @@ function printCspIdeas(
 function printIncomeSummary(
   portfolio: {
     closedTrades: readonly { netPremium: number }[];
-    options: readonly { side: string; openPrice: number; contracts: number }[];
+    options: readonly {
+      side: string;
+      openPrice: number;
+      contracts: number;
+    }[];
   },
   ccs: readonly SellCoveredCallRecommendation[],
   csps: readonly SellCashSecuredPutRecommendation[],
 ): void {
   printHeader('4. INCOME SUMMARY');
-  const captured = portfolio.closedTrades.reduce((s, t) => s + t.netPremium, 0);
-  const openRisk = portfolio.options.reduce(
-    (s, o) => (o.side === 'SHORT' ? s + o.openPrice * 100 * o.contracts : s), 0,
+  const captured = portfolio.closedTrades.reduce(
+    (s, t) => s + t.netPremium,
+    0,
   );
-  // Only count primaries (index 0 per ticker group) for projections.
+  const openRisk = portfolio.options.reduce(
+    (s, o) =>
+      o.side === 'SHORT' ? s + o.openPrice * 100 * o.contracts : s,
+    0,
+  );
   const grouped = groupBy(ccs, (r) => r.symbol);
   let projectedCc = 0;
   for (const [, recs] of grouped) {
@@ -267,7 +354,9 @@ function printIncomeSummary(
 // Dedup
 // ---------------------------------------------------------------------------
 
-function dedupeRecs<R extends Recommendation>(recs: readonly R[]): readonly R[] {
+function dedupeRecs<R extends Recommendation>(
+  recs: readonly R[],
+): readonly R[] {
   const seen = new Set<string>();
   const out: R[] = [];
   for (const r of recs) {
@@ -283,26 +372,67 @@ function dedupeRecs<R extends Recommendation>(recs: readonly R[]): readonly R[] 
 // Main
 // ---------------------------------------------------------------------------
 
-function main(): void {
-  const cfg = loadConfig();
+async function main(): Promise<void> {
+  const mode = parseMode();
+
+  let cfg: LoadedConfig;
+  if (mode === 'real') {
+    console.log('Fetching live market data...\n');
+    const provider = createProvider('real');
+    // Gather all symbols we need data for.
+    const baseCfg = loadConfig(); // load mock first for the symbol list
+    const allSymbols = [
+      ...baseCfg.portfolio.stocks.map((s) => s.symbol),
+      ...baseCfg.portfolio.watchlist,
+    ];
+    const riskFreeRate =
+      baseCfg.marketPrices.size > 0 ? 0.045 : 0.045; // from config or default
+    const snapshot = await provider.getMarketData(allSymbols, riskFreeRate);
+    cfg = loadConfigWithData(snapshot);
+  } else {
+    cfg = loadConfig();
+  }
+
+  const ds = cfg.dataSource;
+  const modeTag = ds?.mode === 'real' ? 'REAL' : 'MOCK';
+  console.log(
+    `Flywheel — ${cfg.evaluationDate} | mode: ${cfg.settings.strategyMode} | data: ${modeTag}`,
+  );
+  if (ds) {
+    console.log(`Source: ${ds.source} @ ${ds.timestamp}`);
+  }
+  console.log(
+    `Holdings: ${cfg.portfolio.stocks.map((s) => `${s.symbol} x${s.shares}`).join(', ')} | Cash: ${money(cfg.portfolio.cash)}`,
+  );
+  if (ds && ds.warnings.length > 0) {
+    console.log('Warnings:');
+    for (const w of ds.warnings) {
+      console.log(`  - ${w}`);
+    }
+  }
 
   const ccs = dedupeRecs(
     generateCoveredCallRecommendations(
-      cfg.portfolio, cfg.chains, cfg.settings, cfg.overrides,
+      cfg.portfolio,
+      cfg.chains,
+      cfg.settings,
+      cfg.overrides,
     ),
   );
   const csps = dedupeRecs(
     generateCashSecuredPutRecommendations(
-      cfg.portfolio.watchlist, cfg.portfolio.cash, cfg.chains, cfg.settings, cfg.overrides,
+      cfg.portfolio.watchlist,
+      cfg.portfolio.cash,
+      cfg.chains,
+      cfg.settings,
+      cfg.overrides,
     ),
   );
   const rolls = generateRollRecommendations(
-    cfg.portfolio.options, cfg.chains, cfg.settings, cfg.overrides,
-  );
-
-  console.log(`Flywheel — ${cfg.evaluationDate} | mode: ${cfg.settings.strategyMode}`);
-  console.log(
-    `Holdings: ${cfg.portfolio.stocks.map((s) => `${s.symbol} x${s.shares}`).join(', ')} | Cash: ${money(cfg.portfolio.cash)}`,
+    cfg.portfolio.options,
+    cfg.chains,
+    cfg.settings,
+    cfg.overrides,
   );
 
   printCoveredCalls(ccs, cfg);
@@ -312,4 +442,7 @@ function main(): void {
   console.log('');
 }
 
-main();
+main().catch((err: unknown) => {
+  console.error('Fatal error:', err instanceof Error ? err.message : err);
+  process.exit(1);
+});
