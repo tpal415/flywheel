@@ -80,10 +80,11 @@ describe('createProvider', () => {
     expect(p).toBeInstanceOf(MockProvider);
   });
 
-  it('returns YahooProvider for "real"', async () => {
-    const { YahooProvider } = await import('../src/data/yahoo.js');
+  it('returns MockProvider for "real" when no Polygon API key', () => {
+    // Without POLYGON_API_KEY, createProvider('real') falls back to MockProvider.
+    delete process.env['POLYGON_API_KEY'];
     const p = createProvider('real');
-    expect(p).toBeInstanceOf(YahooProvider);
+    expect(p).toBeInstanceOf(MockProvider);
   });
 });
 
