@@ -19,11 +19,19 @@ interface RawMarket {
 }
 
 function readMarketJson(): RawMarket {
-  const raw = readFileSync(
+  const candidates = [
+    join(process.cwd(), 'config', 'market.json'),
     join(import.meta.dirname, '..', '..', 'config', 'market.json'),
-    'utf-8',
-  );
-  return JSON.parse(raw) as RawMarket;
+  ];
+  for (const path of candidates) {
+    try {
+      const raw = readFileSync(path, 'utf-8');
+      return JSON.parse(raw) as RawMarket;
+    } catch {
+      // Try next.
+    }
+  }
+  throw new Error('Cannot find config/market.json');
 }
 
 export class MockProvider implements MarketDataProvider {

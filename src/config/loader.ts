@@ -27,7 +27,15 @@ import { generateChain } from '../fixtures/generateChain.js';
 import type { DataMode, MarketSnapshot } from '../data/types.js';
 
 function configPath(filename: string): string {
-  return join(import.meta.dirname, '..', '..', 'config', filename);
+  // Try cwd-relative first (works regardless of how tsx resolves modules),
+  // then fall back to module-relative.
+  const cwdPath = join(process.cwd(), 'config', filename);
+  try {
+    readFileSync(cwdPath);
+    return cwdPath;
+  } catch {
+    return join(import.meta.dirname, '..', '..', 'config', filename);
+  }
 }
 
 function readJson(filename: string): unknown {

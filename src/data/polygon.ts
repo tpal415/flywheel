@@ -50,16 +50,19 @@ function resolveApiKey(): string {
   const envKey = process.env['POLYGON_API_KEY'];
   if (envKey) return envKey;
 
-  // 2. Config file.
-  try {
-    const raw = readFileSync(
-      join(import.meta.dirname, '..', '..', 'config', 'polygon.json'),
-      'utf-8',
-    );
-    const parsed = JSON.parse(raw) as { apiKey?: string };
-    if (parsed.apiKey) return parsed.apiKey;
-  } catch {
-    // File doesn't exist — that's fine.
+  // 2. Config file — try both cwd-relative and module-relative paths.
+  const candidates = [
+    join(process.cwd(), 'config', 'polygon.json'),
+    join(import.meta.dirname, '..', '..', 'config', 'polygon.json'),
+  ];
+  for (const path of candidates) {
+    try {
+      const raw = readFileSync(path, 'utf-8');
+      const parsed = JSON.parse(raw) as { apiKey?: string };
+      if (parsed.apiKey) return parsed.apiKey;
+    } catch {
+      // Try next candidate.
+    }
   }
 
   throw new Error(
