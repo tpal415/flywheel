@@ -2,7 +2,7 @@
  * Mock market data provider — wraps the existing synthetic chain generator
  * and reads prices/IV from config/market.json.
  *
- * This is the Phase 1–3 behavior: deterministic, offline, no network.
+ * Deterministic, offline, no network.
  */
 
 import { readFileSync } from 'node:fs';
@@ -65,5 +65,30 @@ export class MockProvider implements MarketDataProvider {
       source: `synthetic BS chains from config/market.json (eval date ${market.evaluationDate})`,
       warnings: [],
     };
+  }
+
+  async getSpotPrice(symbol: string): Promise<number | undefined> {
+    const market = readMarketJson();
+    return market.tickers[symbol]?.price;
+  }
+
+  async getOptionChain(
+    symbol: string,
+    _riskFreeRate: number,
+  ): Promise<OptionChain | undefined> {
+    const market = readMarketJson();
+    const mkt = market.tickers[symbol];
+    if (!mkt) return undefined;
+    return generateChain({
+      symbol,
+      spot: mkt.price,
+      ivAnnual: mkt.iv,
+      expirations: market.expirations.map((e) => ({
+        date: e.date,
+        dte: e.dte,
+      })),
+      riskFreeRate: market.chainAssumptions.riskFreeRate,
+      dividendYield: market.chainAssumptions.dividendYield,
+    });
   }
 }

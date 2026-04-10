@@ -3,9 +3,10 @@
  * CLI harness — personalized wheel copilot.
  *
  * Usage:
- *   npm run cli               # mock mode (default, offline)
- *   npm run cli -- --mode=real # real mode (Yahoo Finance, needs network)
- *   npm run cli -- --mode=mock # explicit mock mode
+ *   npm run cli                  # mock data (default, offline)
+ *   npm run cli -- --data=real   # live Yahoo Finance data
+ *   npm run cli -- --data=mock   # explicit mock
+ *   npm run cli -- --compare     # run both mock + real, show diff table
  */
 
 import Table from 'cli-table3';
@@ -14,7 +15,12 @@ import {
   loadConfigWithData,
   type LoadedConfig,
 } from '../config/index.js';
-import { createProvider, type DataMode } from '../data/index.js';
+import {
+  createProvider,
+  buildComparison,
+  printComparison,
+  type DataMode,
+} from '../data/index.js';
 import {
   generateCashSecuredPutRecommendations,
   generateCoveredCallRecommendations,
@@ -73,13 +79,85 @@ function prefLabel(pref: string): string {
   }
 }
 
-function parseMode(): DataMode {
-  const arg = process.argv.find((a) => a.startsWith('--mode='));
-  if (!arg) return 'mock';
-  const val = arg.split('=')[1];
-  if (val === 'real' || val === 'mock') return val;
-  console.error(`Unknown mode "${val}", falling back to mock.`);
-  return 'mock';
+interface CliFlags {
+  data: DataMode;
+  compare: boolean;
+}
+
+function parseFlags(): CliFlags {
+  const args = process.argv;
+  const compare = args.includes('--compare');
+
+  // Support both --data= and --mode= (legacy alias).
+  const dataArg =
+    args.find((a) => a.startsWith('--data=')) ??
+    args.find((a) => a.startsWith('--mode='));
+
+  let data: DataMode = 'mock';
+  if (dataArg) {
+    const val = dataArg.split('=')[1];
+    if (val === 'real' || val === 'mock') {
+      data = val;
+    } else {
+      console.error(`Unknown data mode "${val}", using mock.`);
+    }
+  }
+
+  return { data, compare };
+}
+
+// ---------------------------------------------------------------------------
+// Run recommendations and print output for a given config
+// ---------------------------------------------------------------------------
+
+function runAndPrint(cfg: LoadedConfig): void {
+  const ds = cfg.dataSource;
+  const modeTag = ds?.mode === 'real' ? 'REAL' : 'MOCK';
+  console.log(
+    `Flywheel — ${cfg.evaluationDate} | mode: ${cfg.settings.strategyMode} | data: ${modeTag}`,
+  );
+  if (ds) {
+    console.log(`Source: ${ds.source} @ ${ds.timestamp}`);
+  }
+  console.log(
+    `Holdings: ${cfg.portfolio.stocks.map((s) => `${s.symbol} x${s.shares}`).join(', ')} | Cash: ${money(cfg.portfolio.cash)}`,
+  );
+  if (ds && ds.warnings.length > 0) {
+    console.log('Warnings:');
+    for (const w of ds.warnings) {
+      console.log(`  - ${w}`);
+    }
+  }
+
+  const ccs = dedupeRecs(
+    generateCoveredCallRecommendations(
+      cfg.portfolio,
+      cfg.chains,
+      cfg.settings,
+      cfg.overrides,
+    ),
+  );
+  const csps = dedupeRecs(
+    generateCashSecuredPutRecommendations(
+      cfg.portfolio.watchlist,
+      cfg.portfolio.cash,
+      cfg.chains,
+      cfg.settings,
+      cfg.overrides,
+    ),
+  );
+  const rolls = generateRollRecommendations(
+    cfg.portfolio.options,
+    cfg.chains,
+    cfg.settings,
+    cfg.overrides,
+  );
+
+  printCoveredCalls(ccs, cfg);
+  printRollAlerts(rolls);
+  printCspIdeas(csps, cfg.portfolio.cash);
+  printIncomeSummary(cfg.portfolio, ccs, csps);
+  console.log('');
 }
 
 // ---------------------------------------------------------------------------
@@ -369,77 +447,72 @@ function dedupeRecs<R extends Recommendation>(
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Load config with the given data mode
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const mode = parseMode();
-
-  let cfg: LoadedConfig;
+async function loadForMode(mode: DataMode): Promise<LoadedConfig> {
   if (mode === 'real') {
-    console.log('Fetching live market data...\n');
     const provider = createProvider('real');
-    // Gather all symbols we need data for.
-    const baseCfg = loadConfig(); // load mock first for the symbol list
+    const baseCfg = loadConfig();
     const allSymbols = [
       ...baseCfg.portfolio.stocks.map((s) => s.symbol),
       ...baseCfg.portfolio.watchlist,
     ];
-    const riskFreeRate =
-      baseCfg.marketPrices.size > 0 ? 0.045 : 0.045; // from config or default
-    const snapshot = await provider.getMarketData(allSymbols, riskFreeRate);
-    cfg = loadConfigWithData(snapshot);
-  } else {
-    cfg = loadConfig();
+    const snapshot = await provider.getMarketData(allSymbols, 0.045);
+    return loadConfigWithData(snapshot);
   }
+  return loadConfig();
+}
 
-  const ds = cfg.dataSource;
-  const modeTag = ds?.mode === 'real' ? 'REAL' : 'MOCK';
-  console.log(
-    `Flywheel — ${cfg.evaluationDate} | mode: ${cfg.settings.strategyMode} | data: ${modeTag}`,
-  );
-  if (ds) {
-    console.log(`Source: ${ds.source} @ ${ds.timestamp}`);
-  }
-  console.log(
-    `Holdings: ${cfg.portfolio.stocks.map((s) => `${s.symbol} x${s.shares}`).join(', ')} | Cash: ${money(cfg.portfolio.cash)}`,
-  );
-  if (ds && ds.warnings.length > 0) {
-    console.log('Warnings:');
-    for (const w of ds.warnings) {
-      console.log(`  - ${w}`);
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  const flags = parseFlags();
+
+  if (flags.compare) {
+    console.log('Running comparison: MOCK vs REAL...\n');
+
+    const mockProvider = createProvider('mock');
+    const realProvider = createProvider('real');
+    const baseCfg = loadConfig();
+    const allSymbols = [
+      ...baseCfg.portfolio.stocks.map((s) => s.symbol),
+      ...baseCfg.portfolio.watchlist,
+    ];
+
+    const [mockSnap, realSnap] = await Promise.all([
+      mockProvider.getMarketData(allSymbols, 0.045),
+      realProvider.getMarketData(allSymbols, 0.045),
+    ]);
+
+    const results = buildComparison(mockSnap, realSnap, allSymbols);
+    printComparison(results, mockSnap, realSnap);
+
+    // Also run recommendations with real data if we got any.
+    const realSymsWithData = results.filter(
+      (r) => r.realPrice !== undefined,
+    ).length;
+    if (realSymsWithData > 0) {
+      console.log('\n--- Recommendations using REAL data ---');
+      const realCfg = loadConfigWithData(realSnap);
+      runAndPrint(realCfg);
+    } else {
+      console.log(
+        '\nNo real data available — showing MOCK recommendations.\n',
+      );
+      runAndPrint(baseCfg);
     }
+    return;
   }
 
-  const ccs = dedupeRecs(
-    generateCoveredCallRecommendations(
-      cfg.portfolio,
-      cfg.chains,
-      cfg.settings,
-      cfg.overrides,
-    ),
-  );
-  const csps = dedupeRecs(
-    generateCashSecuredPutRecommendations(
-      cfg.portfolio.watchlist,
-      cfg.portfolio.cash,
-      cfg.chains,
-      cfg.settings,
-      cfg.overrides,
-    ),
-  );
-  const rolls = generateRollRecommendations(
-    cfg.portfolio.options,
-    cfg.chains,
-    cfg.settings,
-    cfg.overrides,
-  );
-
-  printCoveredCalls(ccs, cfg);
-  printRollAlerts(rolls);
-  printCspIdeas(csps, cfg.portfolio.cash);
-  printIncomeSummary(cfg.portfolio, ccs, csps);
-  console.log('');
+  // Standard single-mode run.
+  if (flags.data === 'real') {
+    console.log('Fetching live market data...\n');
+  }
+  const cfg = await loadForMode(flags.data);
+  runAndPrint(cfg);
 }
 
 main().catch((err: unknown) => {

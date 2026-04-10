@@ -27,14 +27,28 @@ export interface MarketSnapshot {
 
 export interface MarketDataProvider {
   /**
-   * Fetch or generate market data for the given symbols.
-   *
-   * @param symbols   Symbols to retrieve data for.
-   * @param riskFreeRate  Risk-free rate for delta computation (when greeks
-   *                      are not available from the source).
+   * Fetch or generate market data for the given symbols (batch).
    */
   getMarketData(
     symbols: readonly string[],
     riskFreeRate: number,
   ): Promise<MarketSnapshot>;
+
+  /**
+   * Fetch the spot price for a single symbol.
+   * Returns undefined if the symbol can't be resolved.
+   */
+  getSpotPrice(symbol: string): Promise<number | undefined>;
+
+  /**
+   * Fetch the option chain for a single symbol.
+   * Returns undefined if the symbol has no options or fetch failed.
+   *
+   * @param riskFreeRate  Risk-free rate for delta computation when the
+   *                      source does not provide greeks.
+   */
+  getOptionChain(
+    symbol: string,
+    riskFreeRate: number,
+  ): Promise<OptionChain | undefined>;
 }

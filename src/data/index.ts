@@ -1,6 +1,8 @@
 export type { MarketDataProvider, MarketSnapshot, DataMode } from './types.js';
 export { MockProvider } from './mock.js';
 export { YahooProvider } from './yahoo.js';
+export { buildComparison, printComparison } from './compare.js';
+export type { ComparisonResult } from './compare.js';
 
 import type { DataMode, MarketDataProvider } from './types.js';
 import { MockProvider } from './mock.js';

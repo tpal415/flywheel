@@ -83,11 +83,98 @@ function buildContract(
   };
 }
 
+interface YahooOptionLeg {
+  strike?: number;
+  bid?: number;
+  ask?: number;
+  impliedVolatility?: number;
+  openInterest?: number;
+}
+
+interface YahooOptionSlice {
+  calls?: YahooOptionLeg[];
+  puts?: YahooOptionLeg[];
+}
+
+function mapSlice(
+  raw: YahooOptionSlice,
+  expDate: Date,
+  spot: number,
+  dte: number,
+  riskFreeRate: number,
+): ExpirationSlice | undefined {
+  const calls = (raw.calls ?? [])
+    .map((c) => buildContract(c, true, spot, dte, riskFreeRate))
+    .filter((c): c is OptionContract => c !== undefined);
+  const puts = (raw.puts ?? [])
+    .map((p) => buildContract(p, false, spot, dte, riskFreeRate))
+    .filter((p): p is OptionContract => p !== undefined);
+
+  if (calls.length === 0 && puts.length === 0) return undefined;
+  return { date: toIsoDate(expDate), calls, puts };
+}
+
 export class YahooProvider implements MarketDataProvider {
   private readonly yf: InstanceType<typeof YahooFinance>;
 
   constructor() {
     this.yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
+  }
+
+  async getSpotPrice(symbol: string): Promise<number | undefined> {
+    try {
+      const q = await this.yf.quote(symbol);
+      const price = q.regularMarketPrice;
+      return typeof price === 'number' && price > 0 ? price : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async getOptionChain(
+    symbol: string,
+    riskFreeRate: number,
+  ): Promise<OptionChain | undefined> {
+    const spot = await this.getSpotPrice(symbol);
+    if (!spot) return undefined;
+
+    try {
+      const result = await this.yf.options(symbol);
+      const expDates = (result.expirationDates ?? [])
+        .filter((d): d is Date => d instanceof Date)
+        .slice(0, MAX_EXPIRATIONS);
+
+      if (expDates.length === 0) return undefined;
+
+      const slices: ExpirationSlice[] = [];
+
+      if (result.options?.[0]) {
+        const dte = computeDte(expDates[0]!);
+        if (dte > 0) {
+          const slice = mapSlice(result.options[0], expDates[0]!, spot, dte, riskFreeRate);
+          if (slice) slices.push(slice);
+        }
+      }
+
+      for (let i = 1; i < expDates.length; i++) {
+        await sleep(REQUEST_DELAY_MS);
+        try {
+          const expResult = await this.yf.options(symbol, { date: expDates[i]! });
+          const dte = computeDte(expDates[i]!);
+          if (dte > 0 && expResult.options?.[0]) {
+            const slice = mapSlice(expResult.options[0], expDates[i]!, spot, dte, riskFreeRate);
+            if (slice) slices.push(slice);
+          }
+        } catch {
+          // skip this expiration
+        }
+      }
+
+      if (slices.length === 0) return undefined;
+      return { symbol, underlyingPrice: spot, expirations: slices };
+    } catch {
+      return undefined;
+    }
   }
 
   async getMarketData(
@@ -98,7 +185,7 @@ export class YahooProvider implements MarketDataProvider {
     const chains = new Map<string, OptionChain>();
     const warnings: string[] = [];
 
-    // 1. Fetch all quotes in one batch.
+    // 1. Fetch all quotes.
     console.error(`[yahoo] Fetching quotes for ${symbols.join(', ')}...`);
     for (const sym of symbols) {
       try {
@@ -125,7 +212,6 @@ export class YahooProvider implements MarketDataProvider {
         console.error(`[yahoo] Fetching options for ${sym}...`);
         const result = await this.yf.options(sym);
 
-        // Pick up to MAX_EXPIRATIONS nearest expirations.
         const expDates = (result.expirationDates ?? [])
           .filter((d): d is Date => d instanceof Date)
           .slice(0, MAX_EXPIRATIONS);
@@ -137,7 +223,6 @@ export class YahooProvider implements MarketDataProvider {
 
         const slices: ExpirationSlice[] = [];
 
-        // The first options() call returns the nearest expiration.
         if (result.options?.[0]) {
           const dte = computeDte(expDates[0]!);
           if (dte > 0) {
@@ -146,7 +231,6 @@ export class YahooProvider implements MarketDataProvider {
           }
         }
 
-        // Fetch remaining expirations individually.
         for (let i = 1; i < expDates.length; i++) {
           await sleep(REQUEST_DELAY_MS);
           try {
@@ -186,35 +270,4 @@ export class YahooProvider implements MarketDataProvider {
       warnings,
     };
   }
-}
-
-interface YahooOptionLeg {
-  strike?: number;
-  bid?: number;
-  ask?: number;
-  impliedVolatility?: number;
-  openInterest?: number;
-}
-
-interface YahooOptionSlice {
-  calls?: YahooOptionLeg[];
-  puts?: YahooOptionLeg[];
-}
-
-function mapSlice(
-  raw: YahooOptionSlice,
-  expDate: Date,
-  spot: number,
-  dte: number,
-  riskFreeRate: number,
-): ExpirationSlice | undefined {
-  const calls = (raw.calls ?? [])
-    .map((c) => buildContract(c, true, spot, dte, riskFreeRate))
-    .filter((c): c is OptionContract => c !== undefined);
-  const puts = (raw.puts ?? [])
-    .map((p) => buildContract(p, false, spot, dte, riskFreeRate))
-    .filter((p): p is OptionContract => p !== undefined);
-
-  if (calls.length === 0 && puts.length === 0) return undefined;
-  return { date: toIsoDate(expDate), calls, puts };
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { MockProvider } from '../src/data/mock.js';
-import { createProvider } from '../src/data/index.js';
+import { createProvider, buildComparison } from '../src/data/index.js';
+import type { MarketSnapshot } from '../src/data/types.js';
 
 describe('MockProvider', () => {
   it('returns mock mode and synthetic source', async () => {
@@ -39,9 +40,37 @@ describe('MockProvider', () => {
     const provider = new MockProvider();
     const a = await provider.getMarketData(['TSLA'], 0.045);
     const b = await provider.getMarketData(['TSLA'], 0.045);
-    // Chains should be identical (timestamps will differ).
     expect([...a.chains.entries()]).toEqual([...b.chains.entries()]);
     expect([...a.prices.entries()]).toEqual([...b.prices.entries()]);
+  });
+});
+
+describe('MockProvider per-symbol methods', () => {
+  it('getSpotPrice returns price for known symbol', async () => {
+    const p = new MockProvider();
+    const price = await p.getSpotPrice('TSLA');
+    expect(price).toBe(240);
+  });
+
+  it('getSpotPrice returns undefined for unknown symbol', async () => {
+    const p = new MockProvider();
+    const price = await p.getSpotPrice('FAKESYM');
+    expect(price).toBeUndefined();
+  });
+
+  it('getOptionChain returns chain for known symbol', async () => {
+    const p = new MockProvider();
+    const chain = await p.getOptionChain('TSLA', 0.045);
+    expect(chain).toBeDefined();
+    expect(chain!.symbol).toBe('TSLA');
+    expect(chain!.underlyingPrice).toBe(240);
+    expect(chain!.expirations.length).toBeGreaterThan(0);
+  });
+
+  it('getOptionChain returns undefined for unknown symbol', async () => {
+    const p = new MockProvider();
+    const chain = await p.getOptionChain('FAKESYM', 0.045);
+    expect(chain).toBeUndefined();
   });
 });
 
@@ -55,5 +84,37 @@ describe('createProvider', () => {
     const { YahooProvider } = await import('../src/data/yahoo.js');
     const p = createProvider('real');
     expect(p).toBeInstanceOf(YahooProvider);
+  });
+});
+
+describe('buildComparison', () => {
+  it('computes price diffs and coverage', async () => {
+    const mockSnap: MarketSnapshot = {
+      prices: new Map([['TSLA', 240], ['AMD', 180]]),
+      chains: new Map(),
+      mode: 'mock',
+      timestamp: '',
+      source: 'mock',
+      warnings: [],
+    };
+    const realSnap: MarketSnapshot = {
+      prices: new Map([['TSLA', 250]]),
+      chains: new Map(),
+      mode: 'real',
+      timestamp: '',
+      source: 'real',
+      warnings: [],
+    };
+    const results = buildComparison(mockSnap, realSnap, ['TSLA', 'AMD']);
+    expect(results).toHaveLength(2);
+
+    const tsla = results.find((r) => r.symbol === 'TSLA')!;
+    expect(tsla.mockPrice).toBe(240);
+    expect(tsla.realPrice).toBe(250);
+    expect(tsla.priceDiffPct).toBeCloseTo(10 / 240, 6);
+
+    const amd = results.find((r) => r.symbol === 'AMD')!;
+    expect(amd.realPrice).toBeUndefined();
+    expect(amd.priceDiffPct).toBeUndefined();
   });
 });
