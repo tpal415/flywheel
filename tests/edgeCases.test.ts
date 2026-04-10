@@ -12,6 +12,7 @@ const SETTINGS: StrategySettings = {
   targetDeltaRange: [0.10, 0.40],
   minDTE: 5, maxDTE: 50,
   minPremiumPct: 0.001, minAnnualizedYield: 0.05,
+  maxContractsPerTicker: 0,
   roll: {
     deltaThreshold: 0.5, dteRatioThreshold: 0.3,
     nearStrikePct: 0.02, minDte: 3, profitCapturePct: 0.8,

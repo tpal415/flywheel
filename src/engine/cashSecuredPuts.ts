@@ -63,6 +63,15 @@ function evaluatePut(
     `Cash: $${cashRequired.toFixed(0)}/contract, ${maxContracts} affordable.`,
   ];
 
+  const liqWarnings: string[] = [];
+  if (put.ask > 0 && put.bid > 0) {
+    const spreadPct = (put.ask - put.bid) / put.mid;
+    if (spreadPct > 0.10)
+      liqWarnings.push(`Wide spread: $${put.bid.toFixed(2)}/$${put.ask.toFixed(2)} (${(spreadPct * 100).toFixed(0)}% of mid)`);
+  }
+  if (put.openInterest < 50)
+    liqWarnings.push(`Low open interest: ${put.openInterest}`);
+
   return {
     symbol,
     action: 'SELL_CSP',
@@ -79,6 +88,8 @@ function evaluatePut(
     score,
     styleTag: styleTagFromDelta(absDelta),
     rationale,
+    warnings: liqWarnings,
+    positionCapped: false,
     cashRequired,
   };
 }

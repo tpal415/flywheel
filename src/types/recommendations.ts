@@ -64,6 +64,10 @@ export interface BaseRecommendation {
   readonly score: number;
   readonly styleTag: StyleTag;
   readonly rationale: readonly string[];
+  /** Liquidity / data quality warnings for this specific contract. */
+  readonly warnings: readonly string[];
+  /** True if contractsAvailable was capped by maxContractsPerTicker. */
+  readonly positionCapped: boolean;
 }
 
 export interface SellCoveredCallRecommendation extends BaseRecommendation {

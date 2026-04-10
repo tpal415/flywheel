@@ -14,6 +14,7 @@ const BASE_SETTINGS: StrategySettings = {
   maxDTE: 50,
   minPremiumPct: 0.003,
   minAnnualizedYield: 0.10,
+  maxContractsPerTicker: 0,
   roll: {
     deltaThreshold: 0.5,
     dteRatioThreshold: 0.3,

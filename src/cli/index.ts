@@ -116,6 +116,18 @@ function parseFlags(): CliFlags {
 function runAndPrint(cfg: LoadedConfig): void {
   const ds = cfg.dataSource;
   const modeTag = ds?.mode === 'real' ? 'REAL' : 'MOCK';
+
+  // Safety banner for real-data mode.
+  if (ds?.mode === 'real') {
+    console.log('========================================');
+    console.log('  LIVE MARKET DATA — INFORMATIONAL ONLY');
+    console.log('========================================');
+    console.log('  Recommendations are NOT trade orders.');
+    console.log('  Verify every number against your broker');
+    console.log('  before placing any trades.');
+    console.log('========================================\n');
+  }
+
   console.log(
     `Flywheel — ${cfg.evaluationDate} | mode: ${cfg.settings.strategyMode} | data: ${modeTag}`,
   );
@@ -126,7 +138,7 @@ function runAndPrint(cfg: LoadedConfig): void {
     `Holdings: ${cfg.portfolio.stocks.map((s) => `${s.symbol} x${s.shares}`).join(', ')} | Cash: ${money(cfg.portfolio.cash)}`,
   );
   if (ds && ds.warnings.length > 0) {
-    console.log('Warnings:');
+    console.log('Data warnings:');
     for (const w of ds.warnings) {
       console.log(`  - ${w}`);
     }
@@ -258,8 +270,16 @@ function printCoveredCalls(
     }
     console.log(table.toString());
 
+    if (primary.positionCapped) {
+      console.log(`    ** Capped at ${primary.contractsAvailable} contracts (max per ticker). ${Math.floor(stock.shares / 100) - primary.contractsAvailable} contracts held back.`);
+    }
     for (const line of primary.rationale) {
       console.log(`    ${line}`);
+    }
+    if (primary.warnings.length > 0) {
+      for (const w of primary.warnings) {
+        console.log(`    !! ${w}`);
+      }
     }
   }
 }
@@ -375,6 +395,11 @@ function printCspIdeas(
 
     for (const line of primary.rationale) {
       console.log(`    ${line}`);
+    }
+    if (primary.warnings.length > 0) {
+      for (const w of primary.warnings) {
+        console.log(`    !! ${w}`);
+      }
     }
     console.log('');
   }

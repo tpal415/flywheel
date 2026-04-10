@@ -287,6 +287,8 @@ export function generateRollRecommendations(
       score: best.score,
       styleTag: styleTagFromDelta(best.assignmentProb),
       rationale,
+      warnings: [],
+      positionCapped: false,
       relatedPositionId: pos.id,
       netCredit: best.cand.netCredit,
       triggers,

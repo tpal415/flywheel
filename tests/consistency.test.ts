@@ -73,11 +73,10 @@ describe('CC recommendation math consistency', () => {
     }
   });
 
-  it('contractsAvailable is correct based on shares / 100', () => {
+  it('contractsAvailable is correct based on shares / 100 (respecting position cap)', () => {
     for (const r of recs) {
       const stock = DEMO_PORTFOLIO.stocks.find((s) => s.symbol === r.symbol);
       expect(stock).toBeDefined();
-      // Account for shares already covered by short calls.
       const covered = DEMO_PORTFOLIO.options
         .filter(
           (o) =>
@@ -87,7 +86,13 @@ describe('CC recommendation math consistency', () => {
         )
         .reduce((sum, o) => sum + o.contracts * 100, 0);
       const uncovered = stock!.shares - covered;
-      expect(r.contractsAvailable).toBe(Math.floor(uncovered / 100));
+      const rawContracts = Math.floor(uncovered / 100);
+      // contractsAvailable may be capped by maxContractsPerTicker.
+      expect(r.contractsAvailable).toBeLessThanOrEqual(rawContracts);
+      expect(r.contractsAvailable).toBeGreaterThan(0);
+      if (r.positionCapped) {
+        expect(r.contractsAvailable).toBeLessThan(rawContracts);
+      }
     }
   });
 });

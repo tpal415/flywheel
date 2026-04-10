@@ -252,6 +252,7 @@ interface RawSettings {
   maxDTE: number;
   minPremiumPct: number;
   minAnnualizedYield: number;
+  maxContractsPerTicker?: number;
   roll: {
     deltaThreshold: number;
     dteRatioThreshold: number;
@@ -272,6 +273,7 @@ interface RawOverride {
   maxDTE?: number;
   minPremiumPct?: number;
   minAnnualizedYield?: number;
+  maxContractsPerTicker?: number;
   roll?: Partial<RollSettings>;
 }
 
@@ -501,6 +503,7 @@ function buildCoreConfig(
     maxDTE: settingsRaw.maxDTE,
     minPremiumPct: settingsRaw.minPremiumPct,
     minAnnualizedYield: settingsRaw.minAnnualizedYield,
+    maxContractsPerTicker: settingsRaw.maxContractsPerTicker ?? 0,
     roll: settingsRaw.roll,
   };
 
@@ -517,6 +520,7 @@ function buildCoreConfig(
     ...(o.maxDTE !== undefined && { maxDTE: o.maxDTE }),
     ...(o.minPremiumPct !== undefined && { minPremiumPct: o.minPremiumPct }),
     ...(o.minAnnualizedYield !== undefined && { minAnnualizedYield: o.minAnnualizedYield }),
+    ...(o.maxContractsPerTicker !== undefined && { maxContractsPerTicker: o.maxContractsPerTicker }),
     ...(o.roll !== undefined && { roll: o.roll }),
   }));
 

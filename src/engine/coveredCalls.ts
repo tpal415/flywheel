@@ -26,6 +26,26 @@ import {
 } from '../types/settings.js';
 import { annualizedYield, computeScore } from './scoring.js';
 
+/**
+ * Generate per-contract liquidity and data-quality warnings.
+ * Wide spread, low OI, or delta approximated from BS are flagged.
+ */
+function liquidityWarnings(c: OptionContract): readonly string[] {
+  const w: string[] = [];
+  if (c.ask > 0 && c.bid > 0) {
+    const spreadPct = (c.ask - c.bid) / c.mid;
+    if (spreadPct > 0.10) {
+      w.push(
+        `Wide spread: $${c.bid.toFixed(2)}/$${c.ask.toFixed(2)} (${(spreadPct * 100).toFixed(0)}% of mid)`,
+      );
+    }
+  }
+  if (c.openInterest < 50) {
+    w.push(`Low open interest: ${c.openInterest}`);
+  }
+  return w;
+}
+
 function sharesCoveredByShortCalls(
   symbol: string,
   options: readonly OptionPosition[],
@@ -98,6 +118,13 @@ function findCandidates(
       });
 
       const rationale = buildRationale(stock, call, premium, ay, cycleYield, upsidePct, eff);
+      const liqWarnings = liquidityWarnings(call);
+
+      // Apply position cap.
+      const cap = eff.maxContractsPerTicker;
+      const effectiveContracts =
+        cap > 0 ? Math.min(contractsAvailable, cap) : contractsAvailable;
+      const positionCapped = cap > 0 && contractsAvailable > cap;
 
       recs.push({
         symbol: stock.symbol,
@@ -105,9 +132,9 @@ function findCandidates(
         contract: call,
         expiration: slice.date,
         currentPrice: stock.currentPrice,
-        contractsAvailable,
+        contractsAvailable: effectiveContracts,
         premium,
-        totalPremium: premium * contractsAvailable,
+        totalPremium: premium * effectiveContracts,
         cycleYield,
         upsidePct,
         annualizedYield: ay,
@@ -115,6 +142,8 @@ function findCandidates(
         score,
         styleTag: styleTagFromDelta(absDelta),
         rationale,
+        warnings: liqWarnings,
+        positionCapped,
       });
     }
   }

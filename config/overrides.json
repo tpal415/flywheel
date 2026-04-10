@@ -28,8 +28,9 @@
   {
     "symbol": "OPEN",
     "assignmentPreference": "prefer",
+    "maxContractsPerTicker": 20,
     "minPremiumPct": 0.002,
     "minAnnualizedYield": 0.08,
-    "note": "Large lot, cheap stock. Happy to get called away at a profit."
+    "note": "Large lot, cheap stock. Cap at 20 contracts per cycle."
   }
 ]

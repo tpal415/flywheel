@@ -81,6 +81,8 @@ export interface StrategySettings {
   readonly minPremiumPct: number;
   readonly minAnnualizedYield: number;
   readonly roll: RollSettings;
+  /** Global default max contracts to recommend per ticker. 0 = no limit. */
+  readonly maxContractsPerTicker: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +102,8 @@ export interface TickerOverride {
   readonly maxDTE?: number;
   readonly minPremiumPct?: number;
   readonly minAnnualizedYield?: number;
+  /** Cap position size. 0 = no limit. Overrides global default. */
+  readonly maxContractsPerTicker?: number;
   readonly roll?: Partial<RollSettings>;
 }
 
@@ -118,6 +122,8 @@ export interface EffectiveTickerSettings {
   readonly compounder: boolean;
   readonly minUpsidePct: number;
   readonly strategyMode: StrategyMode;
+  /** 0 = no limit; >0 = cap the recommended contract count. */
+  readonly maxContractsPerTicker: number;
 }
 
 /**
@@ -167,5 +173,7 @@ export function effectiveSettings(
     compounder: override?.compounder ?? false,
     minUpsidePct,
     strategyMode: mode,
+    maxContractsPerTicker:
+      override?.maxContractsPerTicker ?? global.maxContractsPerTicker,
   };
 }
