@@ -50,63 +50,161 @@ const VALID_ASSIGNMENT_PREFS: readonly string[] = [
   'prefer',
 ];
 
-function validateConfig(
+const VALID_SIDES = ['SHORT', 'LONG'];
+const VALID_TYPES = ['CALL', 'PUT'];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function validateRange(v: number, lo: number, hi: number): boolean {
+  return typeof v === 'number' && !Number.isNaN(v) && v >= lo && v <= hi;
+}
+
+/**
+ * Validate all config files. Returns a list of error strings.
+ * Empty array means everything is valid.
+ */
+export function validateConfig(
   holdings: RawHoldings,
   market: RawMarket,
   settings: RawSettings,
   overrides: readonly RawOverride[],
   skipMarketTickers: boolean,
-): void {
-  const errors: string[] = [];
+): readonly string[] {
+  const e: string[] = [];
 
-  if (holdings.cash < 0) errors.push('holdings.json: cash cannot be negative');
+  // --- Holdings ---------------------------------------------------------
+  if (typeof holdings.cash !== 'number' || holdings.cash < 0)
+    e.push('holdings: cash must be a non-negative number');
+
   for (const s of holdings.stocks) {
-    if (!s.symbol || s.symbol.trim() === '')
-      errors.push('holdings.json: stock has empty symbol');
-    if (s.shares <= 0)
-      errors.push(`holdings.json: ${s.symbol} shares must be positive`);
-    if (s.avgCostBasis <= 0)
-      errors.push(`holdings.json: ${s.symbol} avgCostBasis must be positive`);
+    const tag = `holdings: stock ${s.symbol || '(empty)'}`;
+    if (!s.symbol || s.symbol.trim() === '') e.push(`${tag}: empty symbol`);
+    if (!Number.isFinite(s.shares) || s.shares <= 0)
+      e.push(`${tag}: shares must be positive`);
+    if (!Number.isFinite(s.avgCostBasis) || s.avgCostBasis <= 0)
+      e.push(`${tag}: avgCostBasis must be positive`);
   }
 
-  if (!market.evaluationDate || !/^\d{4}-\d{2}-\d{2}$/.test(market.evaluationDate))
-    errors.push('market.json: evaluationDate must be YYYY-MM-DD');
+  for (const o of holdings.openOptions) {
+    const tag = `holdings: option ${o.symbol || '?'} ${o.type} ${o.strike} ${o.expiration}`;
+    if (!o.symbol) e.push(`${tag}: empty symbol`);
+    if (!VALID_TYPES.includes(o.type))
+      e.push(`${tag}: type must be CALL or PUT`);
+    if (!VALID_SIDES.includes(o.side))
+      e.push(`${tag}: side must be SHORT or LONG`);
+    if (!Number.isFinite(o.strike) || o.strike <= 0)
+      e.push(`${tag}: strike must be positive`);
+    if (!Number.isFinite(o.contracts) || o.contracts <= 0)
+      e.push(`${tag}: contracts must be positive`);
+    if (!Number.isFinite(o.openPrice) || o.openPrice < 0)
+      e.push(`${tag}: openPrice must be non-negative`);
+    if (!Number.isFinite(o.originalDte) || o.originalDte <= 0)
+      e.push(`${tag}: originalDte must be positive`);
+    if (!o.expiration || !DATE_RE.test(o.expiration))
+      e.push(`${tag}: expiration must be YYYY-MM-DD`);
+    if (!o.openedOn || !DATE_RE.test(o.openedOn))
+      e.push(`${tag}: openedOn must be YYYY-MM-DD`);
+  }
+
+  for (const t of holdings.closedTrades) {
+    const tag = `holdings: closedTrade ${t.symbol || '?'}`;
+    if (!t.symbol) e.push(`${tag}: empty symbol`);
+    if (!VALID_TYPES.includes(t.type))
+      e.push(`${tag}: type must be CALL or PUT`);
+    if (!Number.isFinite(t.contracts) || t.contracts <= 0)
+      e.push(`${tag}: contracts must be positive`);
+    if (!Number.isFinite(t.netPremium))
+      e.push(`${tag}: netPremium must be a number`);
+    if (!t.closedOn || !DATE_RE.test(t.closedOn))
+      e.push(`${tag}: closedOn must be YYYY-MM-DD`);
+  }
+
+  // --- Market -----------------------------------------------------------
+  if (!market.evaluationDate || !DATE_RE.test(market.evaluationDate))
+    e.push('market: evaluationDate must be YYYY-MM-DD');
+
   if (!skipMarketTickers) {
-    if (market.expirations.length === 0)
-      errors.push('market.json: need at least one expiration');
+    if (!market.expirations || market.expirations.length === 0)
+      e.push('market: need at least one expiration');
     for (const exp of market.expirations) {
-      if (exp.dte <= 0)
-        errors.push(`market.json: expiration ${exp.date} has non-positive DTE`);
+      if (!exp.date || !DATE_RE.test(exp.date))
+        e.push(`market: expiration date "${exp.date}" must be YYYY-MM-DD`);
+      if (!Number.isFinite(exp.dte) || exp.dte <= 0)
+        e.push(`market: expiration ${exp.date} has non-positive DTE`);
     }
     for (const s of holdings.stocks) {
-      if (!market.tickers[s.symbol])
-        errors.push(`market.json: missing price for holding "${s.symbol}"`);
+      if (s.symbol && !market.tickers[s.symbol])
+        e.push(`market: missing price for holding "${s.symbol}"`);
     }
     for (const [sym, data] of Object.entries(market.tickers)) {
-      if (data.price <= 0)
-        errors.push(`market.json: ${sym} price must be positive`);
-      if (data.iv <= 0 || data.iv > 5)
-        errors.push(`market.json: ${sym} IV ${data.iv} looks wrong (expected 0 < iv < 5)`);
+      if (!Number.isFinite(data.price) || data.price <= 0)
+        e.push(`market: ${sym} price must be positive`);
+      if (!Number.isFinite(data.iv) || data.iv <= 0 || data.iv > 5)
+        e.push(`market: ${sym} IV ${data.iv} looks wrong (expected 0 < iv <= 5)`);
     }
   }
 
+  // --- Settings ---------------------------------------------------------
   if (!VALID_STRATEGY_MODES.includes(settings.strategyMode))
-    errors.push(`settings.json: strategyMode "${settings.strategyMode}" must be one of ${VALID_STRATEGY_MODES.join(', ')}`);
+    e.push(`settings: strategyMode "${settings.strategyMode}" must be one of ${VALID_STRATEGY_MODES.join(', ')}`);
   const [dLo, dHi] = settings.targetDeltaRange;
-  if (dLo < 0 || dHi > 1 || dLo > dHi)
-    errors.push('settings.json: targetDeltaRange must be [0..1] with lo <= hi');
+  if (!validateRange(dLo, 0, 1) || !validateRange(dHi, 0, 1) || dLo > dHi)
+    e.push('settings: targetDeltaRange must be [0..1] with lo <= hi');
+  if (!Number.isFinite(settings.minDTE) || settings.minDTE < 0)
+    e.push('settings: minDTE must be non-negative');
+  if (!Number.isFinite(settings.maxDTE) || settings.maxDTE < settings.minDTE)
+    e.push('settings: maxDTE must be >= minDTE');
+  if (!Number.isFinite(settings.minPremiumPct) || settings.minPremiumPct < 0)
+    e.push('settings: minPremiumPct must be non-negative');
+  if (!Number.isFinite(settings.minAnnualizedYield) || settings.minAnnualizedYield < 0)
+    e.push('settings: minAnnualizedYield must be non-negative');
 
+  // Roll settings.
+  const r = settings.roll;
+  if (!validateRange(r.deltaThreshold, 0, 1))
+    e.push('settings: roll.deltaThreshold must be in [0, 1]');
+  if (!validateRange(r.dteRatioThreshold, 0, 1))
+    e.push('settings: roll.dteRatioThreshold must be in [0, 1]');
+  if (!validateRange(r.nearStrikePct, 0, 1))
+    e.push('settings: roll.nearStrikePct must be in [0, 1]');
+  if (!Number.isFinite(r.minDte) || r.minDte < 0)
+    e.push('settings: roll.minDte must be non-negative');
+  if (!validateRange(r.profitCapturePct, 0, 1))
+    e.push('settings: roll.profitCapturePct must be in [0, 1]');
+
+  // --- Overrides --------------------------------------------------------
   for (const o of overrides) {
-    if (!o.symbol) errors.push('overrides.json: override has empty symbol');
+    const tag = `overrides: ${o.symbol || '(empty)'}`;
+    if (!o.symbol) e.push(`${tag}: empty symbol`);
     if (o.assignmentPreference !== undefined && !VALID_ASSIGNMENT_PREFS.includes(o.assignmentPreference))
-      errors.push(`overrides.json: ${o.symbol} assignmentPreference "${o.assignmentPreference}" must be one of ${VALID_ASSIGNMENT_PREFS.join(', ')}`);
-    if (o.minUpsidePct !== undefined && (o.minUpsidePct < 0 || o.minUpsidePct > 1))
-      errors.push(`overrides.json: ${o.symbol} minUpsidePct must be 0..1`);
+      e.push(`${tag}: assignmentPreference "${o.assignmentPreference}" invalid`);
+    if (o.minUpsidePct !== undefined && !validateRange(o.minUpsidePct, 0, 1))
+      e.push(`${tag}: minUpsidePct must be in [0, 1]`);
+    if (o.targetDeltaRange !== undefined) {
+      const [oLo, oHi] = o.targetDeltaRange;
+      if (!validateRange(oLo, 0, 1) || !validateRange(oHi, 0, 1) || oLo > oHi)
+        e.push(`${tag}: targetDeltaRange must be [0..1] with lo <= hi`);
+    }
   }
 
+  return e;
+}
+
+function throwIfInvalid(errors: readonly string[]): void {
   if (errors.length > 0) {
     throw new Error(`Config validation failed:\n  - ${errors.join('\n  - ')}`);
   }
+}
+
+/**
+ * Run config validation against on-disk files and return the error list.
+ * Returns empty array if everything is valid.
+ */
+export function validateConfigFiles(): readonly string[] {
+  const holdings = readJson('holdings.json') as RawHoldings;
+  const market = readJson('market.json') as RawMarket;
+  const settingsRaw = readJson('settings.json') as RawSettings;
+  const overridesRaw = readJson('overrides.json') as RawOverride[];
+  return validateConfig(holdings, market, settingsRaw, overridesRaw, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +309,7 @@ export function loadConfig(): LoadedConfig {
   const overridesRaw = readJson('overrides.json') as RawOverride[];
   const watchlistRaw = readJson('watchlist.json') as RawWatchlist;
 
-  validateConfig(holdings, market, settingsRaw, overridesRaw, false);
+  throwIfInvalid(validateConfig(holdings, market, settingsRaw, overridesRaw, false));
 
   const marketPrices = new Map<string, { price: number; iv: number }>();
   for (const [sym, data] of Object.entries(market.tickers)) {
@@ -274,7 +372,7 @@ export function loadConfigWithData(snapshot: MarketSnapshot): LoadedConfig {
   const watchlistRaw = readJson('watchlist.json') as RawWatchlist;
 
   // In real mode, skip market.json ticker validation (prices come from provider).
-  validateConfig(holdings, market, settingsRaw, overridesRaw, snapshot.mode === 'real');
+  throwIfInvalid(validateConfig(holdings, market, settingsRaw, overridesRaw, snapshot.mode === 'real'));
 
   // Merge prices: real data takes precedence, market.json as fallback.
   const marketPrices = new Map<string, { price: number; iv: number }>();

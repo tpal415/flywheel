@@ -13,6 +13,7 @@ import Table from 'cli-table3';
 import {
   loadConfig,
   loadConfigWithData,
+  validateConfigFiles,
   type LoadedConfig,
 } from '../config/index.js';
 import {
@@ -82,11 +83,13 @@ function prefLabel(pref: string): string {
 interface CliFlags {
   data: DataMode;
   compare: boolean;
+  validate: boolean;
 }
 
 function parseFlags(): CliFlags {
   const args = process.argv;
   const compare = args.includes('--compare');
+  const validate = args.includes('--validate');
 
   // Support both --data= and --mode= (legacy alias).
   const dataArg =
@@ -103,7 +106,7 @@ function parseFlags(): CliFlags {
     }
   }
 
-  return { data, compare };
+  return { data, compare, validate };
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +473,21 @@ async function loadForMode(mode: DataMode): Promise<LoadedConfig> {
 
 async function main(): Promise<void> {
   const flags = parseFlags();
+
+  if (flags.validate) {
+    console.log('Validating config files...\n');
+    const errors = validateConfigFiles();
+    if (errors.length === 0) {
+      console.log('All config files are valid.');
+    } else {
+      console.error(`Found ${errors.length} error(s):`);
+      for (const err of errors) {
+        console.error(`  - ${err}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
 
   if (flags.compare) {
     console.log('Running comparison: MOCK vs REAL...\n');
