@@ -4,11 +4,14 @@
  *
  * Usage:
  *   npm run cli                  # mock data (default, offline)
- *   npm run cli -- --data=real   # live Yahoo Finance data
+ *   npm run cli -- --data=real   # live Polygon.io data
  *   npm run cli -- --data=mock   # explicit mock
  *   npm run cli -- --compare     # run both mock + real, show diff table
+ *   npm run cli -- --html [path] # also write an HTML report to disk
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import Table from 'cli-table3';
 import {
   loadConfig,
@@ -27,6 +30,11 @@ import {
   generateCoveredCallRecommendations,
   generateRollRecommendations,
 } from '../engine/index.js';
+import {
+  renderHtmlReport,
+  type DataProvenance,
+  type IncomeSummary,
+} from './renderers/html.js';
 import type {
   Recommendation,
   RollRecommendation,
@@ -84,6 +92,8 @@ interface CliFlags {
   data: DataMode;
   compare: boolean;
   validate: boolean;
+  /** undefined = no HTML report; string = path (empty string = auto-generate). */
+  htmlPath: string | undefined;
 }
 
 function parseFlags(): CliFlags {
@@ -91,7 +101,7 @@ function parseFlags(): CliFlags {
   const compare = args.includes('--compare');
   const validate = args.includes('--validate');
 
-  // Support both --data= and --mode= (legacy alias).
+  // Support --data=, --mode= (legacy), and bare --real as shorthand.
   const dataArg =
     args.find((a) => a.startsWith('--data=')) ??
     args.find((a) => a.startsWith('--mode='));
@@ -104,16 +114,41 @@ function parseFlags(): CliFlags {
     } else {
       console.error(`Unknown data mode "${val}", using mock.`);
     }
+  } else if (args.includes('--real')) {
+    data = 'real';
+  } else if (args.includes('--mock')) {
+    data = 'mock';
   }
 
-  return { data, compare, validate };
+  // --html can take either the next positional as a path, or no arg.
+  // Supports: --html, --html=path, --html path
+  let htmlPath: string | undefined;
+  const htmlEq = args.find((a) => a.startsWith('--html='));
+  if (htmlEq) {
+    htmlPath = htmlEq.split('=').slice(1).join('=');
+  } else {
+    const idx = args.indexOf('--html');
+    if (idx >= 0) {
+      const next = args[idx + 1];
+      // Treat the next token as a path only if it's not another flag.
+      htmlPath = next && !next.startsWith('--') ? next : '';
+    }
+  }
+
+  return { data, compare, validate, htmlPath };
+}
+
+function defaultHtmlPath(now: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+  return join('out', `report-${stamp}.html`);
 }
 
 // ---------------------------------------------------------------------------
 // Run recommendations and print output for a given config
 // ---------------------------------------------------------------------------
 
-function runAndPrint(cfg: LoadedConfig): void {
+function runAndPrint(cfg: LoadedConfig, htmlPath: string | undefined): void {
   const ds = cfg.dataSource;
   const modeTag = ds?.mode === 'real' ? 'REAL' : 'MOCK';
 
@@ -172,7 +207,128 @@ function runAndPrint(cfg: LoadedConfig): void {
   printRollAlerts(rolls);
   printCspIdeas(csps, cfg.portfolio.cash);
   printIncomeSummary(cfg.portfolio, ccs, csps);
+
+  if (htmlPath !== undefined) {
+    writeHtmlReport({
+      htmlPath,
+      cfg,
+      ccs: [...ccs],
+      csps: [...csps],
+      rolls: [...rolls],
+    });
+  }
+
   console.log('');
+}
+
+/**
+ * Build an IncomeSummary from the same numbers the CLI table prints.
+ * Keeps the engine outputs and the renderer outputs in sync.
+ */
+function buildIncomeSummary(
+  portfolio: {
+    closedTrades: readonly { netPremium: number }[];
+    options: readonly { side: string; openPrice: number; contracts: number }[];
+  },
+  ccs: readonly SellCoveredCallRecommendation[],
+  csps: readonly SellCashSecuredPutRecommendation[],
+): IncomeSummary {
+  const captured = portfolio.closedTrades.reduce(
+    (s, t) => s + t.netPremium,
+    0,
+  );
+  const atRisk = portfolio.options.reduce(
+    (s, o) =>
+      o.side === 'SHORT' ? s + o.openPrice * 100 * o.contracts : s,
+    0,
+  );
+  const ccGrouped = groupBy(ccs, (r) => r.symbol);
+  let projectedCC = 0;
+  for (const [, recs] of ccGrouped) {
+    if (recs[0]) projectedCC += recs[0].totalPremium;
+  }
+  const cspGrouped = groupBy(csps, (r) => r.symbol);
+  let projectedCSP = 0;
+  for (const [, recs] of cspGrouped) {
+    if (recs[0]) projectedCSP += recs[0].premium;
+  }
+  return {
+    captured,
+    atRisk,
+    projectedCC,
+    projectedCSP,
+    total: projectedCC + projectedCSP,
+  };
+}
+
+/**
+ * Classify each held + watchlist symbol into polygon/fallback/mock.
+ * `polygon` means the symbol had a real chain in the snapshot,
+ * `fallback` means synthetic chain was used even though real mode is on,
+ * `mock` means mock mode.
+ */
+function buildProvenance(cfg: LoadedConfig): readonly DataProvenance[] {
+  const ds = cfg.dataSource;
+  const symbols = [
+    ...cfg.portfolio.stocks.map((s) => s.symbol),
+    ...cfg.portfolio.watchlist,
+  ];
+  const unique = [...new Set(symbols)].sort();
+  const warningsBySymbol = new Map<string, string>();
+  if (ds) {
+    for (const w of ds.warnings) {
+      const m = w.match(/^([A-Z.]+):\s*(.+)$/);
+      if (m && m[1] && m[2]) warningsBySymbol.set(m[1], m[2]);
+    }
+  }
+
+  return unique.map((sym) => {
+    if (!ds || ds.mode === 'mock') {
+      return { symbol: sym, source: 'mock' as const };
+    }
+    const warning = warningsBySymbol.get(sym);
+    if (warning) {
+      return { symbol: sym, source: 'fallback' as const, note: warning };
+    }
+    return { symbol: sym, source: 'polygon' as const };
+  });
+}
+
+function writeHtmlReport(args: {
+  htmlPath: string;
+  cfg: LoadedConfig;
+  ccs: readonly SellCoveredCallRecommendation[];
+  csps: readonly SellCashSecuredPutRecommendation[];
+  rolls: readonly RollRecommendation[];
+}): void {
+  const { htmlPath, cfg, ccs, csps, rolls } = args;
+  const now = new Date();
+  const path =
+    htmlPath === '' ? defaultHtmlPath(now) : htmlPath;
+
+  const mode = cfg.dataSource?.mode === 'real' ? 'real' : 'demo';
+  const recommendations = [...ccs, ...csps];
+  const incomeSummary = buildIncomeSummary(cfg.portfolio, ccs, csps);
+  const provenance = mode === 'real' ? buildProvenance(cfg) : undefined;
+
+  const html = renderHtmlReport({
+    generatedAt: now,
+    mode,
+    recommendations,
+    rollAlerts: rolls,
+    incomeSummary,
+    ...(provenance !== undefined && { provenance }),
+  });
+
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, html, 'utf-8');
+    console.log(`\nHTML report written to ${path}`);
+  } catch (e: unknown) {
+    console.error(
+      `Failed to write HTML report: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,12 +696,12 @@ async function main(): Promise<void> {
     if (realSymsWithData > 0) {
       console.log('\n--- Recommendations using REAL data ---');
       const realCfg = loadConfigWithData(realSnap);
-      runAndPrint(realCfg);
+      runAndPrint(realCfg, flags.htmlPath);
     } else {
       console.log(
         '\nNo real data available — showing MOCK recommendations.\n',
       );
-      runAndPrint(baseCfg);
+      runAndPrint(baseCfg, flags.htmlPath);
     }
     return;
   }
@@ -555,7 +711,7 @@ async function main(): Promise<void> {
     console.log('Fetching live market data...\n');
   }
   const cfg = await loadForMode(flags.data);
-  runAndPrint(cfg);
+  runAndPrint(cfg, flags.htmlPath);
 }
 
 main().catch((err: unknown) => {

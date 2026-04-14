@@ -7,3 +7,4 @@ dist/
 coverage/
 *.tsbuildinfo
 config/polygon.json
+out/
