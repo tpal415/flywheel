@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TAO Subnet Metrics Viewer</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --red: #f85149;
+      --yellow: #d29922;
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+      --orange: #ffa657;
+      --tao: #e6c87a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--tao);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    header h1 span.logo { font-size: 20px; }
+
+    .header-meta {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+
+    .stat-chip {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .stat-chip strong { color: var(--text); }
+
+    .refresh-btn {
+      background: var(--blue);
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .controls {
+      padding: 12px 20px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .controls label { font-size: 12px; color: var(--muted); }
+
+    select, input[type="text"] {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 5px;
+      padding: 5px 8px;
+      font-size: 12px;
+    }
+
+    select:focus, input[type="text"]:focus {
+      outline: none;
+      border-color: var(--blue);
+    }
+
+    .legend {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+    }
+
+    /* Indicator panel */
+    .indicators-panel {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .indicator-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+
+    .indicator-card h3 {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .indicator-card .value {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--tao);
+    }
+
+    .indicator-card .sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* Table */
+    .table-wrapper {
+      overflow-x: auto;
+      padding: 0 20px 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 12px;
+    }
+
+    thead th {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    thead th:hover { color: var(--blue); }
+    thead th.sort-asc::after { content: ' ↑'; color: var(--blue); }
+    thead th.sort-desc::after { content: ' ↓'; color: var(--blue); }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+
+    tbody tr:hover { background: var(--surface2); }
+
+    td {
+      padding: 7px 10px;
+      white-space: nowrap;
+    }
+
+    .subnet-id {
+      font-weight: 700;
+      color: var(--blue);
+      font-size: 13px;
+    }
+
+    .subnet-name {
+      color: var(--text);
+      font-weight: 500;
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .neu { color: var(--muted); }
+
+    .bar-cell {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .bar-bg {
+      width: 60px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 3px;
+    }
+
+    .score-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .score-hot { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+    .score-warm { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+    .score-cool { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+    .score-cold { background: rgba(139,148,158,0.15); color: var(--muted); border: 1px solid rgba(139,148,158,0.3); }
+
+    /* Tooltip */
+    .col-help {
+      cursor: help;
+      text-decoration: underline dotted;
+    }
+
+    /* Loading */
+    .loading-overlay {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 60px;
+      flex-direction: column;
+      gap: 14px;
+      color: var(--muted);
+    }
+
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--tao);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-box {
+      margin: 20px;
+      background: rgba(248,81,73,0.1);
+      border: 1px solid rgba(248,81,73,0.3);
+      border-radius: 8px;
+      padding: 16px;
+      color: var(--red);
+    }
+
+    /* detail drawer */
+    .drawer-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 100;
+    }
+
+    .drawer-backdrop.open { display: block; }
+
+    .drawer {
+      position: fixed;
+      right: 0; top: 0; bottom: 0;
+      width: 420px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      z-index: 101;
+      overflow-y: auto;
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+      padding: 20px;
+    }
+
+    .drawer.open { transform: translateX(0); }
+
+    .drawer-close {
+      position: absolute;
+      top: 14px; right: 14px;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+
+    .drawer h2 { font-size: 18px; margin-bottom: 16px; color: var(--tao); }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .metric-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+    }
+
+    .metric-item label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    .metric-item span { font-size: 15px; font-weight: 600; }
+
+    .leading-indicators {
+      background: rgba(88,166,255,0.05);
+      border: 1px solid rgba(88,166,255,0.2);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-top: 12px;
+    }
+
+    .leading-indicators h3 {
+      font-size: 12px;
+      color: var(--blue);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .signal-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+
+    .signal-row:last-child { border-bottom: none; }
+    .signal-name { color: var(--muted); }
+    .signal-val { font-weight: 600; }
+
+    .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+    .tag-buy { background: rgba(63,185,80,0.15); color: var(--green); }
+    .tag-sell { background: rgba(248,81,73,0.15); color: var(--red); }
+    .tag-neutral { background: rgba(139,148,158,0.15); color: var(--muted); }
+
+    footer {
+      text-align: center;
+      padding: 20px;
+      color: var(--muted);
+      font-size: 11px;
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1><span class="logo">⚡</span> TAO Subnet Metrics Viewer</h1>
+  <div class="header-meta">
+    <div class="stat-chip" id="chip-subnets">Subnets: <strong>—</strong></div>
+    <div class="stat-chip" id="chip-updated">Updated: <strong>—</strong></div>
+    <button class="refresh-btn" id="refresh-btn" onclick="loadData()">↻ Refresh</button>
+  </div>
+</header>
+
+<div class="controls">
+  <label>Sort by:</label>
+  <select id="sort-select" onchange="renderTable()">
+    <option value="signal_score">Signal Score</option>
+    <option value="netuid">Subnet ID</option>
+    <option value="emission_tao">Emission (TAO)</option>
+    <option value="total_stake">Total Stake</option>
+    <option value="active_validators">Validators</option>
+    <option value="active_miners">Miners</option>
+    <option value="price">Alpha Price</option>
+    <option value="tao_in">TAO Inflow</option>
+  </select>
+
+  <label>Direction:</label>
+  <select id="dir-select" onchange="renderTable()">
+    <option value="desc">High → Low</option>
+    <option value="asc">Low → High</option>
+  </select>
+
+  <label>Filter:</label>
+  <input type="text" id="filter-input" placeholder="Search subnet name or ID…" oninput="renderTable()" />
+
+  <div class="legend" style="margin-left:auto">
+    <div class="legend-item"><div class="dot" style="background:var(--red)"></div> High momentum</div>
+    <div class="legend-item"><div class="dot" style="background:var(--yellow)"></div> Building</div>
+    <div class="legend-item"><div class="dot" style="background:var(--green)"></div> Stable / Accumulate</div>
+    <div class="legend-item"><div class="dot" style="background:var(--muted)"></div> Cold</div>
+  </div>
+</div>
+
+<div class="indicators-panel" id="indicators-panel" style="display:none">
+  <div class="indicator-card">
+    <h3>Total Subnets</h3>
+    <div class="value" id="kpi-subnets">—</div>
+    <div class="sub">Active on network</div>
+  </div>
+  <div class="indicator-card">
+    <h3>Highest Emission</h3>
+    <div class="value" id="kpi-top-emission">—</div>
+    <div class="sub" id="kpi-top-emission-sub">Subnet —</div>
+  </div>
+  <div class="indicator-card">
+    <h3>Most Staked</h3>
+    <div class="value" id="kpi-top-stake">—</div>
+    <div class="sub" id="kpi-top-stake-sub">Subnet —</div>
+  </div>
+  <div class="indicator-card">
+    <h3>Largest TAO Inflow</h3>
+    <div class="value" id="kpi-top-inflow">—</div>
+    <div class="sub" id="kpi-top-inflow-sub">Subnet —</div>
+  </div>
+  <div class="indicator-card">
+    <h3>Highest Alpha Price</h3>
+    <div class="value" id="kpi-top-price">—</div>
+    <div class="sub" id="kpi-top-price-sub">Subnet —</div>
+  </div>
+  <div class="indicator-card">
+    <h3>Top Signal Score</h3>
+    <div class="value" id="kpi-top-signal">—</div>
+    <div class="sub" id="kpi-top-signal-sub">Subnet — leading indicators</div>
+  </div>
+</div>
+
+<div id="main-content">
+  <div class="loading-overlay" id="loading">
+    <div class="spinner"></div>
+    <div>Loading TAO subnet data…</div>
+  </div>
+</div>
+
+<!-- Detail Drawer -->
+<div class="drawer-backdrop" id="backdrop" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <button class="drawer-close" onclick="closeDrawer()">✕ Close</button>
+  <h2 id="drawer-title">Subnet —</h2>
+  <div id="drawer-content"></div>
+</div>
+
+<footer>
+  Data via <a href="https://taostats.io" style="color:var(--blue)" target="_blank">taostats.io</a> API ·
+  Signal scores are heuristic leading-indicator composites, not financial advice ·
+  <span id="footer-ts"></span>
+</footer>
+
+<script>
+const API_KEY = 'tao-550d961d-1e22-4666-a4a2-b8b9724ebf54:6d4d8cd2';
+const BASE    = 'https://api.taostats.io';
+
+let allSubnets = [];
+let poolData   = {};
+let flowData   = {};
+
+// ─── Fetch helpers ───────────────────────────────────────────────────────────
+
+async function apiFetch(path) {
+  const res = await fetch(BASE + path, {
+    headers: { Authorization: API_KEY }
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
+  return res.json();
+}
+
+// ─── Main load ───────────────────────────────────────────────────────────────
+
+async function loadData() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = '↻ Loading…';
+  document.getElementById('main-content').innerHTML =
+    '<div class="loading-overlay" id="loading"><div class="spinner"></div><div>Fetching subnet data…</div></div>';
+  document.getElementById('indicators-panel').style.display = 'none';
+
+  try {
+    // Fetch in parallel
+    const [subnetRes, poolRes, flowRes] = await Promise.allSettled([
+      apiFetch('/api/subnet/latest/v1?limit=256'),
+      apiFetch('/api/dtao/pool/latest/v1?limit=256'),
+      apiFetch('/api/dtao/tao_flow/v1?limit=256'),
+    ]);
+
+    // Process subnets
+    if (subnetRes.status === 'rejected') throw subnetRes.reason;
+    const rawSubnets = subnetRes.value?.data ?? subnetRes.value?.subnets ?? subnetRes.value ?? [];
+
+    // Process pool data (keyed by netuid)
+    if (poolRes.status === 'fulfilled') {
+      const poolArr = poolRes.value?.data ?? poolRes.value?.pools ?? poolRes.value ?? [];
+      for (const p of poolArr) {
+        const id = p.netuid ?? p.net_uid;
+        if (id !== undefined) poolData[id] = p;
+      }
+    }
+
+    // Process flow data
+    if (flowRes.status === 'fulfilled') {
+      const flowArr = flowRes.value?.data ?? flowRes.value?.flows ?? flowRes.value ?? [];
+      for (const f of flowArr) {
+        const id = f.netuid ?? f.net_uid;
+        if (id !== undefined) flowData[id] = f;
+      }
+    }
+
+    // Normalize subnets
+    allSubnets = rawSubnets.map(s => normalizeSubnet(s));
+
+    // Compute signal scores
+    computeSignals();
+
+    renderKPIs();
+    renderTable();
+
+    const now = new Date();
+    document.getElementById('chip-updated').innerHTML =
+      `Updated: <strong>${now.toLocaleTimeString()}</strong>`;
+    document.getElementById('chip-subnets').innerHTML =
+      `Subnets: <strong>${allSubnets.length}</strong>`;
+    document.getElementById('footer-ts').textContent = `Last refresh: ${now.toLocaleString()}`;
+
+  } catch (err) {
+    document.getElementById('main-content').innerHTML =
+      `<div class="error-box"><strong>Error loading data:</strong><br>${err.message}<br><br>
+       Check your API key and CORS settings. The API must be reachable from your browser.</div>`;
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ Refresh';
+  }
+}
+
+// ─── Normalise raw subnet object ─────────────────────────────────────────────
+
+function normalizeSubnet(s) {
+  const id = s.netuid ?? s.net_uid ?? 0;
+  const pool = poolData[id] ?? {};
+  const flow = flowData[id] ?? {};
+
+  // emission: prefer rao_recycled or emission fields, convert from rao (1e9)
+  const emissionRao = Number(s.emission ?? s.emissions ?? s.emission_sum ?? 0);
+  const emissionTao = emissionRao / 1e9;
+
+  // stake: try several field names
+  const stakeRao = Number(
+    s.total_stake ?? s.stake ?? s.alpha_stake ?? s.total_alpha_stake ?? 0
+  );
+  const stakeTao = stakeRao > 1e12 ? stakeRao / 1e9 : stakeRao; // handle rao vs tao
+
+  // validators / miners
+  const validators = Number(s.active_validators ?? s.validators ?? s.validator_count ?? 0);
+  const miners     = Number(s.active_miners ?? s.miners ?? s.miner_count ?? s.n ?? 0);
+
+  // price from pool
+  const taoIn    = Number(pool.tao_in ?? pool.tao ?? 0);
+  const alphaOut = Number(pool.alpha_out ?? pool.alpha ?? 0);
+  const price    = alphaOut > 0 ? taoIn / alphaOut : 0;
+
+  // TAO flow
+  const taoFlow  = Number(flow.tao_flow ?? flow.net_tao ?? flow.flow ?? 0);
+
+  // owner/tempo
+  const owner    = s.owner_coldkey ?? s.owner ?? '—';
+  const tempo    = Number(s.tempo ?? 0);
+  const immunity = Number(s.immunity_period ?? 0);
+
+  return {
+    netuid: id,
+    name: s.name ?? s.subnet_name ?? `Subnet ${id}`,
+    emission_tao: emissionTao,
+    total_stake: stakeTao,
+    active_validators: validators,
+    active_miners: miners,
+    price,
+    tao_in: taoFlow,
+    pool_tao: taoIn,
+    pool_alpha: alphaOut,
+    tempo,
+    immunity,
+    owner,
+    _raw: s,
+    signal_score: 0, // computed below
+    signals: {},
+  };
+}
+
+// ─── Signal / leading-indicator scoring ─────────────────────────────────────
+// Higher score = more bullish leading signals
+// Components:
+//   1. Emission rank (higher emission → more attractive to stakers → future price driver)
+//   2. Stake rank (more stake → validator confidence → leading buy signal)
+//   3. Positive TAO flow (net inflow = demand signal)
+//   4. Validator count rank (more validators = healthy, growing subnet)
+//   5. Pool depth rank (tao_in → liquidity)
+
+function computeSignals() {
+  const n = allSubnets.length;
+  if (!n) return;
+
+  // Rank each metric 0-100
+  const rank = (arr, key, higher = true) => {
+    const sorted = [...arr].sort((a,b) => higher ? b[key]-a[key] : a[key]-b[key]);
+    const rankMap = {};
+    sorted.forEach((s,i) => rankMap[s.netuid] = Math.round((1 - i/n) * 100));
+    return rankMap;
+  };
+
+  const emRank   = rank(allSubnets, 'emission_tao');
+  const stRank   = rank(allSubnets, 'total_stake');
+  const valRank  = rank(allSubnets, 'active_validators');
+  const poolRank = rank(allSubnets, 'pool_tao');
+
+  for (const s of allSubnets) {
+    const id = s.netuid;
+
+    // Flow signal: positive inflow gets bonus
+    const flowSignal = s.tao_in > 0 ? 25 : (s.tao_in < 0 ? 0 : 10);
+
+    // Weighted composite
+    const score =
+      emRank[id]  * 0.30 +
+      stRank[id]  * 0.25 +
+      valRank[id] * 0.20 +
+      poolRank[id]* 0.15 +
+      flowSignal  * 0.10 * 4; // scale to ~25 max
+
+    s.signal_score = Math.round(score);
+
+    s.signals = {
+      emission_rank:  emRank[id],
+      stake_rank:     stRank[id],
+      validator_rank: valRank[id],
+      pool_rank:      poolRank[id],
+      tao_flow:       s.tao_in,
+      flow_signal:    flowSignal,
+    };
+  }
+}
+
+// ─── KPI bar ─────────────────────────────────────────────────────────────────
+
+function renderKPIs() {
+  const panel = document.getElementById('indicators-panel');
+  panel.style.display = 'grid';
+
+  document.getElementById('kpi-subnets').textContent = allSubnets.length;
+
+  const byEmission  = [...allSubnets].sort((a,b) => b.emission_tao - a.emission_tao)[0];
+  const byStake     = [...allSubnets].sort((a,b) => b.total_stake - a.total_stake)[0];
+  const byInflow    = [...allSubnets].sort((a,b) => b.tao_in - a.tao_in)[0];
+  const byPrice     = [...allSubnets].sort((a,b) => b.price - a.price)[0];
+  const bySignal    = [...allSubnets].sort((a,b) => b.signal_score - a.signal_score)[0];
+
+  set('kpi-top-emission',     fmt(byEmission?.emission_tao, 4) + ' τ');
+  set('kpi-top-emission-sub', `Subnet ${byEmission?.netuid} · ${byEmission?.name}`);
+
+  set('kpi-top-stake',     fmtLarge(byStake?.total_stake) + ' τ');
+  set('kpi-top-stake-sub', `Subnet ${byStake?.netuid} · ${byStake?.name}`);
+
+  set('kpi-top-inflow',     fmt(byInflow?.tao_in, 2) + ' τ');
+  set('kpi-top-inflow-sub', `Subnet ${byInflow?.netuid} · ${byInflow?.name}`);
+
+  set('kpi-top-price',     fmt(byPrice?.price, 6) + ' τ/α');
+  set('kpi-top-price-sub', `Subnet ${byPrice?.netuid} · ${byPrice?.name}`);
+
+  set('kpi-top-signal',     (bySignal?.signal_score ?? '—') + ' / 100');
+  set('kpi-top-signal-sub', `Subnet ${bySignal?.netuid} · ${bySignal?.name}`);
+}
+
+// ─── Table render ────────────────────────────────────────────────────────────
+
+let sortKey = 'signal_score';
+let sortDir = 'desc';
+
+function renderTable() {
+  const sortSel = document.getElementById('sort-select').value;
+  const dirSel  = document.getElementById('dir-select').value;
+  const query   = document.getElementById('filter-input').value.toLowerCase().trim();
+
+  sortKey = sortSel;
+  sortDir = dirSel;
+
+  let rows = [...allSubnets];
+
+  if (query) {
+    rows = rows.filter(s =>
+      String(s.netuid).includes(query) ||
+      s.name.toLowerCase().includes(query)
+    );
+  }
+
+  rows.sort((a, b) => {
+    const va = a[sortKey] ?? 0;
+    const vb = b[sortKey] ?? 0;
+    return sortDir === 'desc' ? vb - va : va - vb;
+  });
+
+  const maxEmission  = Math.max(...allSubnets.map(s => s.emission_tao));
+  const maxStake     = Math.max(...allSubnets.map(s => s.total_stake));
+  const maxValidators = Math.max(...allSubnets.map(s => s.active_validators));
+
+  const tbody = rows.map(s => {
+    const emPct  = maxEmission > 0 ? (s.emission_tao / maxEmission * 100) : 0;
+    const stPct  = maxStake > 0 ? (s.total_stake / maxStake * 100) : 0;
+    const valPct = maxValidators > 0 ? (s.active_validators / maxValidators * 100) : 0;
+
+    const flowClass = s.tao_in > 0 ? 'pos' : (s.tao_in < 0 ? 'neg' : 'neu');
+    const flowSign  = s.tao_in > 0 ? '+' : '';
+
+    const badge = scoreBadge(s.signal_score);
+
+    return `<tr onclick="openDrawer(${s.netuid})" style="cursor:pointer">
+      <td class="subnet-id">${s.netuid}</td>
+      <td class="subnet-name" title="${s.name}">${s.name}</td>
+      <td>${badge}</td>
+      <td>
+        <div class="bar-cell">
+          <div class="bar-bg"><div class="bar-fill" style="width:${emPct}%;background:var(--tao)"></div></div>
+          <span>${fmt(s.emission_tao, 4)}</span>
+        </div>
+      </td>
+      <td>
+        <div class="bar-cell">
+          <div class="bar-bg"><div class="bar-fill" style="width:${stPct}%;background:var(--purple)"></div></div>
+          <span>${fmtLarge(s.total_stake)}</span>
+        </div>
+      </td>
+      <td>
+        <div class="bar-cell">
+          <div class="bar-bg"><div class="bar-fill" style="width:${valPct}%;background:var(--blue)"></div></div>
+          <span>${s.active_validators}</span>
+        </div>
+      </td>
+      <td class="neu">${s.active_miners}</td>
+      <td>${s.price > 0 ? fmt(s.price, 6) : '<span class="neu">—</span>'}</td>
+      <td class="${flowClass}">${s.tao_in !== 0 ? flowSign + fmt(s.tao_in, 2) : '<span class="neu">—</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  const colHeaders = [
+    ['netuid',            'ID'],
+    ['name',              'Name'],
+    ['signal_score',      '⚡ Signal', true],
+    ['emission_tao',      'Emission (τ)', true],
+    ['total_stake',       'Total Stake', true],
+    ['active_validators', 'Validators', true],
+    ['active_miners',     'Miners'],
+    ['price',             'Alpha Price'],
+    ['tao_in',            'TAO Flow'],
+  ].map(([key, label, help]) => {
+    const cls = key === sortKey ? (sortDir === 'desc' ? 'sort-desc' : 'sort-asc') : '';
+    const title = TOOLTIPS[key] ? `title="${TOOLTIPS[key]}"` : '';
+    return `<th class="${cls}${help ? ' col-help' : ''}" ${title} onclick="sortBy('${key}')">${label}</th>`;
+  }).join('');
+
+  document.getElementById('main-content').innerHTML = `
+    <div class="table-wrapper">
+      <table>
+        <thead><tr>${colHeaders}</tr></thead>
+        <tbody>${tbody || '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--muted)">No results</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+const TOOLTIPS = {
+  signal_score:      'Composite leading-indicator score (0–100). Weights: emission 30%, stake 25%, validators 20%, pool depth 15%, TAO inflow 10%.',
+  emission_tao:      'TAO emitted to subnet per tempo. Higher emission = more incentive to stake here → leading buy signal.',
+  total_stake:       'Total TAO staked in subnet. Rising stake precedes rising emissions share and alpha demand.',
+  active_validators: 'Count of active validators. Growth signals institutional confidence.',
+  tao_in:            'Net TAO flow (inflow − outflow). Positive = capital entering subnet → bullish leading signal.',
+};
+
+function sortBy(key) {
+  if (key === sortKey) {
+    sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    sortKey = key;
+    sortDir = 'desc';
+  }
+  document.getElementById('sort-select').value = key;
+  document.getElementById('dir-select').value  = sortDir;
+  renderTable();
+}
+
+function scoreBadge(score) {
+  if (score >= 70) return `<span class="score-badge score-hot">🔥 ${score}</span>`;
+  if (score >= 45) return `<span class="score-badge score-warm">📈 ${score}</span>`;
+  if (score >= 25) return `<span class="score-badge score-cool">✅ ${score}</span>`;
+  return `<span class="score-badge score-cold">❄ ${score}</span>`;
+}
+
+// ─── Detail drawer ───────────────────────────────────────────────────────────
+
+function openDrawer(netuid) {
+  const s = allSubnets.find(x => x.netuid === netuid);
+  if (!s) return;
+
+  document.getElementById('drawer-title').textContent = `Subnet ${s.netuid} · ${s.name}`;
+
+  const flowClass = s.tao_in > 0 ? 'pos' : (s.tao_in < 0 ? 'neg' : 'neu');
+  const flowTag   = s.tao_in > 0 ? 'tag-buy' : (s.tao_in < 0 ? 'tag-sell' : 'tag-neutral');
+  const flowLabel = s.tao_in > 0 ? 'INFLOW' : (s.tao_in < 0 ? 'OUTFLOW' : 'NEUTRAL');
+
+  const sigRow = (label, value, tag) =>
+    `<div class="signal-row"><span class="signal-name">${label}</span>
+     <span class="signal-val">${value} ${tag ? `<span class="tag ${tag}">${tagLabel(tag)}</span>` : ''}</span></div>`;
+
+  const tagLabel = t => t === 'tag-buy' ? 'BULL' : t === 'tag-sell' ? 'BEAR' : 'NEUTRAL';
+
+  const emTag  = s.signals.emission_rank >= 70 ? 'tag-buy' : s.signals.emission_rank >= 40 ? 'tag-neutral' : 'tag-sell';
+  const stTag  = s.signals.stake_rank >= 70 ? 'tag-buy' : s.signals.stake_rank >= 40 ? 'tag-neutral' : 'tag-sell';
+  const valTag = s.signals.validator_rank >= 70 ? 'tag-buy' : s.signals.validator_rank >= 40 ? 'tag-neutral' : 'tag-sell';
+  const poolTag= s.signals.pool_rank >= 70 ? 'tag-buy' : s.signals.pool_rank >= 40 ? 'tag-neutral' : 'tag-sell';
+
+  document.getElementById('drawer-content').innerHTML = `
+    <div class="metric-grid">
+      <div class="metric-item"><label>Signal Score</label><span>${scoreBadge(s.signal_score)}</span></div>
+      <div class="metric-item"><label>Alpha Price</label><span>${s.price > 0 ? fmt(s.price,6)+' τ/α' : '—'}</span></div>
+      <div class="metric-item"><label>Emission / tempo</label><span>${fmt(s.emission_tao,6)} τ</span></div>
+      <div class="metric-item"><label>Total Stake</label><span>${fmtLarge(s.total_stake)} τ</span></div>
+      <div class="metric-item"><label>Validators</label><span>${s.active_validators}</span></div>
+      <div class="metric-item"><label>Miners</label><span>${s.active_miners}</span></div>
+      <div class="metric-item"><label>Pool TAO</label><span>${fmtLarge(s.pool_tao)} τ</span></div>
+      <div class="metric-item"><label>Pool Alpha</label><span>${fmtLarge(s.pool_alpha)} α</span></div>
+      <div class="metric-item"><label>Tempo</label><span>${s.tempo} blocks</span></div>
+      <div class="metric-item"><label>Immunity</label><span>${s.immunity} blocks</span></div>
+    </div>
+
+    <div class="leading-indicators">
+      <h3>⚡ Leading Indicator Breakdown</h3>
+      ${sigRow('Emission rank (top %)', `${s.signals.emission_rank}/100`, emTag)}
+      ${sigRow('Stake rank (top %)', `${s.signals.stake_rank}/100`, stTag)}
+      ${sigRow('Validator rank', `${s.signals.validator_rank}/100`, valTag)}
+      ${sigRow('Pool depth rank', `${s.signals.pool_rank}/100`, poolTag)}
+      ${sigRow('TAO net flow', `${fmt(s.tao_in,4)} τ`, flowTag)}
+    </div>
+
+    <div style="margin-top:14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:11px;color:var(--muted);line-height:1.7">
+      <strong style="color:var(--text)">How to read leading indicators:</strong><br>
+      • <strong style="color:var(--tao)">Emission rank</strong> — subnets with high emissions attract new stakers before alpha price reacts<br>
+      • <strong style="color:var(--purple)">Stake rank</strong> — rising stake precedes emission allocation increases<br>
+      • <strong style="color:var(--blue)">Validator rank</strong> — validator growth signals institutional confidence, often leads price by 1–2 epochs<br>
+      • <strong style="color:var(--green)">TAO inflow</strong> — net positive flow is the most direct demand signal for alpha price
+    </div>
+
+    <div style="margin-top:12px;font-size:11px;color:var(--muted)">
+      Owner: <code style="font-size:10px;word-break:break-all">${s.owner}</code>
+    </div>`;
+
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('backdrop').classList.add('open');
+}
+
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('backdrop').classList.remove('open');
+}
+
+// ─── Formatters ──────────────────────────────────────────────────────────────
+
+function fmt(n, decimals = 2) {
+  if (n === undefined || n === null || isNaN(n)) return '—';
+  return Number(n).toFixed(decimals);
+}
+
+function fmtLarge(n) {
+  if (!n || isNaN(n)) return '—';
+  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(2) + 'K';
+  return n.toFixed(2);
+}
+
+function set(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+loadData();
+</script>
+</body>
+</html>
