@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "tao-metrics-viewer.html", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/", "dest": "/tao-metrics-viewer.html" },
+    { "src": "/tao-metrics-viewer.html", "dest": "/tao-metrics-viewer.html" }
+  ]
+}
